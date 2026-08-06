@@ -46,6 +46,8 @@ struct SettingsView: View {
                     .fixedSize(horizontal: true, vertical: false)
                     .frame(width: 142, alignment: .trailing)
                 }
+                .padding(8)
+                .burritoGlass(cornerRadius: 10, tint: .black.opacity(0.08))
 
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
@@ -64,6 +66,8 @@ struct SettingsView: View {
                     .controlSize(.small)
                     .tint(.white.opacity(0.8))
                 }
+                .padding(8)
+                .burritoGlass(cornerRadius: 10, tint: .black.opacity(0.08))
 
             }
             .padding(.horizontal, 16)

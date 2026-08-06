@@ -17,14 +17,7 @@ struct ContentView: View {
             }
         }
         .frame(width: 340, height: 180)
-        .background {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color.black.opacity(0.22))
-                }
-        }
+        .burritoGlass(cornerRadius: 16, tint: .black.opacity(0.18))
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -32,5 +25,26 @@ struct ContentView: View {
         }
         .preferredColorScheme(.dark)
         .animation(.easeOut(duration: 0.16), value: showSettings)
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func burritoGlass(cornerRadius: CGFloat, tint: Color = .clear, interactive: Bool = false) -> some View {
+        if #available(macOS 26.0, *) {
+            glassEffect(
+                Glass.regular.tint(tint).interactive(interactive),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+        } else {
+            background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(tint)
+                    }
+            }
+        }
     }
 }
