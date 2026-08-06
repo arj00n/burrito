@@ -7,7 +7,6 @@ struct DropZoneView: View {
     @AppStorage("enginePreset") private var enginePreset = "balanced"
     @State private var isTargetedPNG = false
     @State private var isTargetedWebP = false
-    @State private var isTargetedPDF = false
     @Namespace private var engineTabAnimation
     
     var body: some View {
@@ -29,7 +28,6 @@ struct DropZoneView: View {
                 processingZoneView
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .burritoGlass(cornerRadius: 10, tint: .black.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .animation(.easeInOut(duration: 0.4), value: processor.isProcessing)
             .overlay {
@@ -82,7 +80,7 @@ struct DropZoneView: View {
             engineTab("Smallest", value: "smallest")
         }
         .padding(3)
-        .burritoGlass(cornerRadius: 9, tint: .black.opacity(0.1), interactive: true)
+        .background(Color.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.1), lineWidth: 0.75))
         .disabled(processor.isBatchRunning)
         .opacity(processor.isBatchRunning ? 0.55 : 1)
@@ -114,13 +112,10 @@ struct DropZoneView: View {
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .accessibilityValue(enginePreset == value ? "Selected" : "")
-        .help(value == "smallest"
-            ? "Maximum compression. PDFs may be rasterized to reach the smallest size."
-            : "\(title) compression")
     }
 
     private var isDropHovering: Bool {
-        isTargetedPNG || isTargetedWebP || isTargetedPDF
+        isTargetedPNG || isTargetedWebP
     }
 
     private var idleDropView: some View {
@@ -158,36 +153,6 @@ struct DropZoneView: View {
     }
 
     private var splitZonesView: some View {
-        Group {
-            if processor.detectedMediaType == .pdf {
-                pdfDropZone
-            } else {
-                formatDropZones
-            }
-        }
-        .opacity(processor.isProcessing ? 0 : (isDropHovering ? 1 : 0.001))
-        .allowsHitTesting(!processor.isProcessing)
-        .animation(.easeOut(duration: 0.14), value: isDropHovering)
-    }
-
-    private var pdfDropZone: some View {
-        ZStack {
-            Rectangle().fill(isTargetedPDF ? Color.white.opacity(0.1) : Color.clear)
-            Text("PDF")
-                .font(.system(size: 14, weight: .bold, design: .rounded))
-                .tracking(1)
-                .foregroundColor(.white.opacity(0.8))
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
-        .onDrop(of: [.fileURL], delegate: MediaDropDelegate(
-            isTargeted: $isTargetedPDF,
-            processor: processor,
-            strategy: .highQuality
-        ))
-    }
-
-    private var formatDropZones: some View {
         HStack(spacing: 0) {
             ZStack {
                 Rectangle().fill(isTargetedPNG ? Color.white.opacity(0.1) : Color.clear)
@@ -227,6 +192,9 @@ struct DropZoneView: View {
                 strategy: .webOptimized
             ))
         }
+        .opacity(processor.isProcessing ? 0 : (isDropHovering ? 1 : 0.001))
+        .allowsHitTesting(!processor.isProcessing)
+        .animation(.easeOut(duration: 0.14), value: isDropHovering)
     }
 
     private var highQualityDropLabel: String {
