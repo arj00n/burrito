@@ -7,7 +7,7 @@ struct DropZoneView: View {
     @AppStorage("enginePreset") private var enginePreset = "balanced"
     @State private var isTargetedPNG = false
     @State private var isTargetedWebP = false
-    @Namespace private var engineTabAnimation
+    @State private var isTargetedPDF = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -74,48 +74,23 @@ struct DropZoneView: View {
     }
 
     private var engineSelector: some View {
-        HStack(spacing: 3) {
-            engineTab("Fast", value: "fast")
-            engineTab("Balanced", value: "balanced")
-            engineTab("Smallest", value: "smallest")
+        Picker("Compression", selection: $enginePreset) {
+            Text("Fast").tag("fast")
+            Text("Balanced").tag("balanced")
+            Text("Smallest").tag("smallest")
         }
-        .padding(3)
-        .background(Color.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.1), lineWidth: 0.75))
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: .infinity)
+        .fixedSize(horizontal: false, vertical: true)
+        .clipShape(Capsule())
         .disabled(processor.isBatchRunning)
         .opacity(processor.isBatchRunning ? 0.55 : 1)
-        .help("Compression effort for every dropped file")
-    }
-
-    private func engineTab(_ title: String, value: String) -> some View {
-        Button {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                enginePreset = value
-            }
-        } label: {
-            ZStack {
-                if enginePreset == value {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.white.opacity(0.15))
-                        .matchedGeometryEffect(id: "engineTabSelection", in: engineTabAnimation)
-                }
-
-                Text(title)
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundColor(enginePreset == value ? .white : .white.opacity(0.5))
-            }
-            .frame(height: 20)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity)
-        .contentShape(Rectangle())
-        .accessibilityValue(enginePreset == value ? "Selected" : "")
+        .help("Fast favors speed, Balanced mixes speed and size, and Smallest applies maximum compression")
     }
 
     private var isDropHovering: Bool {
-        isTargetedPNG || isTargetedWebP
+        isTargetedPNG || isTargetedWebP || isTargetedPDF
     }
 
     private var idleDropView: some View {
@@ -131,7 +106,6 @@ struct DropZoneView: View {
             Text("Drop images, video, or PDFs")
                 .font(.system(size: 11, weight: .bold, design: .rounded))
                 .foregroundColor(.white.opacity(0.82))
-
         }
     }
 
@@ -153,6 +127,36 @@ struct DropZoneView: View {
     }
 
     private var splitZonesView: some View {
+        Group {
+            if processor.detectedMediaType == .pdf {
+                pdfDropZone
+            } else {
+                formatDropZones
+            }
+        }
+        .opacity(processor.isProcessing ? 0 : (isDropHovering ? 1 : 0.001))
+        .allowsHitTesting(!processor.isProcessing)
+        .animation(.easeOut(duration: 0.14), value: isDropHovering)
+    }
+
+    private var pdfDropZone: some View {
+        ZStack {
+            Rectangle().fill(isTargetedPDF ? Color.white.opacity(0.1) : Color.clear)
+            Text("PDF")
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .tracking(1)
+                .foregroundColor(.white.opacity(0.8))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onDrop(of: [.fileURL], delegate: MediaDropDelegate(
+            isTargeted: $isTargetedPDF,
+            processor: processor,
+            strategy: .highQuality
+        ))
+    }
+
+    private var formatDropZones: some View {
         HStack(spacing: 0) {
             ZStack {
                 Rectangle().fill(isTargetedPNG ? Color.white.opacity(0.1) : Color.clear)
@@ -192,9 +196,6 @@ struct DropZoneView: View {
                 strategy: .webOptimized
             ))
         }
-        .opacity(processor.isProcessing ? 0 : (isDropHovering ? 1 : 0.001))
-        .allowsHitTesting(!processor.isProcessing)
-        .animation(.easeOut(duration: 0.14), value: isDropHovering)
     }
 
     private var highQualityDropLabel: String {

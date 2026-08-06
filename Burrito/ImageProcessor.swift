@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 import SwiftUI
 import Combine
 import PDFKit
+import AppKit
 
 enum TargetFormat: Equatable {
     case png
@@ -199,7 +200,6 @@ final class ImageProcessor: ObservableObject {
             return nil
         }.first
     }
-
     func previewMediaType(from providers: [NSItemProvider]) {
         let token = UUID()
         mediaPreviewToken = token
@@ -651,19 +651,20 @@ final class ImageProcessor: ObservableObject {
                     var shouldRemoveStagingFile = false
 
                     if enginePreset != "fast", let document = PDFDocument(url: sourceURL) {
-                        let optimizeImages = PDFDocumentWriteOption(rawValue: "PDFDocumentOptimizeImagesForScreenOption")
-                        let encodeImagesAsJPEG = PDFDocumentWriteOption(rawValue: "PDFDocumentSaveImagesAsJPEGOption")
-                        let options: [PDFDocumentWriteOption: Any]
-                        switch enginePreset {
-                        case "smallest":
-                            options = [optimizeImages: true, encodeImagesAsJPEG: true]
-                        default:
-                            options = [encodeImagesAsJPEG: true]
-                        }
-
-                        if document.write(to: stagingURL, withOptions: options) {
+                        if enginePreset == "smallest",
+                           let compressedData = try aggressivelyCompressedPDF(
+                               from: document,
+                               targetBytes: 800_000
+                           ) {
+                            try compressedData.write(to: stagingURL, options: .atomic)
                             pdfInputURL = stagingURL
                             shouldRemoveStagingFile = true
+                        } else {
+                            let encodeImagesAsJPEG = PDFDocumentWriteOption(rawValue: "PDFDocumentSaveImagesAsJPEGOption")
+                            if document.write(to: stagingURL, withOptions: [encodeImagesAsJPEG: true]) {
+                                pdfInputURL = stagingURL
+                                shouldRemoveStagingFile = true
+                            }
                         }
                     }
                     defer {
@@ -813,6 +814,112 @@ final class ImageProcessor: ObservableObject {
             suffix += 1
         }
         return candidate
+    }
+
+    private func aggressivelyCompressedPDF(from document: PDFDocument, targetBytes: Int) throws -> Data? {
+        let attempts: [(dpi: CGFloat, quality: CGFloat)] = [
+            (96, 0.42),
+            (72, 0.30),
+            (54, 0.20),
+            (40, 0.12),
+            (30, 0.08),
+            (24, 0.05)
+        ]
+        var smallestResult: Data?
+
+        for attempt in attempts {
+            let candidate = try rasterizedPDF(
+                from: document,
+                dpi: attempt.dpi,
+                jpegQuality: attempt.quality
+            )
+            if smallestResult == nil || candidate.count < smallestResult!.count {
+                smallestResult = candidate
+            }
+            if candidate.count <= targetBytes {
+                return candidate
+            }
+        }
+
+        return smallestResult
+    }
+
+    private func rasterizedPDF(
+        from document: PDFDocument,
+        dpi: CGFloat,
+        jpegQuality: CGFloat
+    ) throws -> Data {
+        let pdfData = CFDataCreateMutable(nil, 0)!
+        guard let consumer = CGDataConsumer(data: pdfData),
+              let pdfContext = CGContext(consumer: consumer, mediaBox: nil, nil) else {
+            throw ConversionFailure(
+                kind: .invalidOutput,
+                title: "PDF compression could not start",
+                message: "Burrito could not create the compact PDF container.",
+                suggestion: "Try Balanced mode or verify that the PDF opens normally.",
+                technicalDetails: nil
+            )
+        }
+
+        for pageIndex in 0..<document.pageCount {
+            guard let page = document.page(at: pageIndex) else { continue }
+            let bounds = page.bounds(for: .mediaBox)
+            guard bounds.width > 0, bounds.height > 0 else { continue }
+
+            let pixelsWide = max(1, Int((bounds.width * dpi / 72).rounded()))
+            let pixelsHigh = max(1, Int((bounds.height * dpi / 72).rounded()))
+            guard let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: pixelsWide,
+                pixelsHigh: pixelsHigh,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: false,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bitmapFormat: [],
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+            ) else { continue }
+
+            guard let graphicsContext = NSGraphicsContext(bitmapImageRep: bitmap) else { continue }
+            let bitmapContext = graphicsContext.cgContext
+            bitmapContext.setFillColor(NSColor.white.cgColor)
+            bitmapContext.fill(CGRect(x: 0, y: 0, width: pixelsWide, height: pixelsHigh))
+            bitmapContext.scaleBy(
+                x: CGFloat(pixelsWide) / bounds.width,
+                y: CGFloat(pixelsHigh) / bounds.height
+            )
+            bitmapContext.translateBy(x: -bounds.minX, y: -bounds.minY)
+            page.draw(with: .mediaBox, to: bitmapContext)
+
+            guard let jpegData = bitmap.representation(
+                using: .jpeg,
+                properties: [.compressionFactor: jpegQuality]
+            ), let pageImage = NSBitmapImageRep(data: jpegData)?.cgImage else { continue }
+
+            var mediaBox = CGRect(origin: .zero, size: bounds.size)
+            let pageOptions = [kCGPDFContextMediaBox as String: NSData(
+                bytes: &mediaBox,
+                length: MemoryLayout<CGRect>.size
+            )] as CFDictionary
+            pdfContext.beginPDFPage(pageOptions)
+            pdfContext.draw(pageImage, in: mediaBox)
+            pdfContext.endPDFPage()
+        }
+
+        pdfContext.closePDF()
+        let result = pdfData as Data
+        guard !result.isEmpty else {
+            throw ConversionFailure(
+                kind: .invalidOutput,
+                title: "PDF compression produced no pages",
+                message: "Burrito could not rasterize this PDF.",
+                suggestion: "Try Balanced mode for this document.",
+                technicalDetails: nil
+            )
+        }
+        return result
     }
 
     private func bundledTool(named name: String) throws -> URL {
