@@ -1,48 +1,36 @@
 import SwiftUI
 
-// Custom Blur Fade Transition
-struct BlurFadeModifier: ViewModifier {
-    let isActive: Bool
-    func body(content: Content) -> some View {
-        content
-            .opacity(isActive ? 0 : 1)
-            .blur(radius: isActive ? 10 : 0)
-    }
-}
-
-extension AnyTransition {
-    static var blurFade: AnyTransition {
-        .modifier(
-            active: BlurFadeModifier(isActive: true),
-            identity: BlurFadeModifier(isActive: false)
-        )
-    }
-}
-
 struct ContentView: View {
     @State private var showSettings = false
+    @StateObject private var processor = ImageProcessor()
     
     var body: some View {
         ZStack {
-            Color.black.edgesIgnoringSafeArea(.all)
-            
             if showSettings {
                 SettingsView(showSettings: $showSettings)
-                    .transition(.blurFade)
-                    .zIndex(1) // Ensures proper layering during transition
+                    .transition(.opacity)
+                    .zIndex(1)
             } else {
-                DropZoneView(showSettings: $showSettings)
-                    .transition(.blurFade)
+                DropZoneView(showSettings: $showSettings, processor: processor)
+                    .transition(.opacity)
                     .zIndex(0)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSPopover.didCloseNotification)) { _ in
-            showSettings = false
-        }
-        
         .frame(width: 340, height: 180)
+        .background {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.black.opacity(0.22))
+                }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        }
         .preferredColorScheme(.dark)
-        // Spring animation provides a premium feel to the blur transition
-        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showSettings)
+        .animation(.easeOut(duration: 0.16), value: showSettings)
     }
 }

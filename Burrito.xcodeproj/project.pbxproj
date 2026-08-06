@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		6B5A10012FA1000100010001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 6B5A10032FA1000100010001 /* Sparkle */; };
+		6B5A10112FA1000100010011 /* pdfcpu in Resources */ = {isa = PBXBuildFile; fileRef = 6B5A10132FA1000100010011 /* pdfcpu */; };
+		6B5A10122FA1000100010011 /* pdfcpu-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 6B5A10142FA1000100010011 /* pdfcpu-LICENSE.txt */; };
 		6B0D403D2F957767000AC14A /* ffmpeg in Resources */ = {isa = PBXBuildFile; fileRef = 6B0D403C2F957767000AC14A /* ffmpeg */; };
 		6BD284012F851724003A3C84 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BD283EB2F851724003A3C84 /* AppDelegate.swift */; };
 		6BD284022F851724003A3C84 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 6BD283EC2F851724003A3C84 /* Assets.xcassets */; };
@@ -22,6 +25,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		6B5A10132FA1000100010011 /* pdfcpu */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = pdfcpu; sourceTree = "<group>"; };
+		6B5A10142FA1000100010011 /* pdfcpu-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "pdfcpu-LICENSE.txt"; sourceTree = "<group>"; };
 		6B0D403C2F957767000AC14A /* ffmpeg */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = ffmpeg; sourceTree = "<group>"; };
 		6BD283EA2F851709003A3C84 /* Burrito.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Burrito.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		6BD283EB2F851724003A3C84 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -42,6 +47,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6B5A10012FA1000100010001 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -69,6 +75,8 @@
 				6BD283F12F851724003A3C84 /* ImageProcessor.swift */,
 				6BD283F22F851724003A3C84 /* oxipng */,
 				6BD283F32F851724003A3C84 /* pngquant */,
+				6B5A10132FA1000100010011 /* pdfcpu */,
+				6B5A10142FA1000100010011 /* pdfcpu-LICENSE.txt */,
 				6BD283F42F851724003A3C84 /* SettingsView.swift */,
 				6BD283F52F851724003A3C84 /* Shaders.metal */,
 			);
@@ -92,6 +100,7 @@
 			);
 			name = Burrito;
 			packageProductDependencies = (
+				6B5A10032FA1000100010001 /* Sparkle */,
 			);
 			productName = SwishDrop;
 			productReference = 6BD283EA2F851709003A3C84 /* Burrito.app */;
@@ -124,6 +133,9 @@
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 6B2F8A902F56AE3F0007D703;
+			packageReferences = (
+				6B5A10022FA1000100010001 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -142,6 +154,8 @@
 				6BD284052F851724003A3C84 /* cwebp in Resources */,
 				6BD284082F851724003A3C84 /* oxipng in Resources */,
 				6BD284092F851724003A3C84 /* pngquant in Resources */,
+				6B5A10112FA1000100010011 /* pdfcpu in Resources */,
+				6B5A10122FA1000100010011 /* pdfcpu-LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -296,9 +310,14 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Burrito/Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_SUEnableAutomaticChecks = YES;
+				INFOPLIST_KEY_SUFeedURL = "https://raw.githubusercontent.com/arj00n/burrito/main/appcast.xml";
+				INFOPLIST_KEY_SUPublicEDKey = "Mu28tOSsYrPYWBqMCkk7uNEklOlOSOHLCdl6Hdgliss=";
+				INFOPLIST_KEY_SUScheduledCheckInterval = 86400;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -331,9 +350,14 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Burrito/Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_SUEnableAutomaticChecks = YES;
+				INFOPLIST_KEY_SUFeedURL = "https://raw.githubusercontent.com/arj00n/burrito/main/appcast.xml";
+				INFOPLIST_KEY_SUPublicEDKey = "Mu28tOSsYrPYWBqMCkk7uNEklOlOSOHLCdl6Hdgliss=";
+				INFOPLIST_KEY_SUScheduledCheckInterval = 86400;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -374,6 +398,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		6B5A10022FA1000100010001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.9.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		6B5A10032FA1000100010001 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6B5A10022FA1000100010001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 6B2F8A912F56AE3F0007D703 /* Project object */;
 }

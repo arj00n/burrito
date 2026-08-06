@@ -2,9 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @Binding var showSettings: Bool
-    
-    @AppStorage("imageQuality") private var imageQuality: Double = 80.0
-    @AppStorage("videoQuality") private var videoQuality: Double = 80.0
+
+    @AppStorage("outputLocation") private var outputLocation = "optimizedFolder"
     
     var body: some View {
         VStack(spacing: 0) {
@@ -22,50 +21,58 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
                 
                 Spacer()
-                Text("Quality Settings")
+                Text("Settings")
                     .font(.system(size: 13, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 8)
-            .background(Color(white: 0.05))
+            .background(Color.black.opacity(0.16))
             
-            // Sliders
             VStack(spacing: 12) {
-                VStack(spacing: 2) {
-                    HStack {
-                        Text("Image Quality")
-                        Spacer()
-                        Text("\(Int(imageQuality))")
+                HStack(spacing: 8) {
+                    Text("Save To")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white.opacity(0.8))
+                    Spacer()
+                    Picker("", selection: $outputLocation) {
+                        Text("Optimized Folder").tag("optimizedFolder")
+                        Text("Beside Originals").tag("besideOriginals")
                     }
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.8))
-                    
-                    Slider(value: $imageQuality, in: 40...100, step: 1)
-                        .tint(.white)
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .controlSize(.small)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(width: 142, alignment: .trailing)
                 }
-                
-                VStack(spacing: 2) {
-                    HStack {
-                        Text("Video Quality")
-                        Spacer()
-                        Text("\(Int(videoQuality))")
+
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Automatic Updates")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.8))
+                        Text("On · checks daily")
+                            .font(.system(size: 8, weight: .medium, design: .rounded))
+                            .foregroundColor(.white.opacity(0.42))
                     }
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.8))
-                    
-                    Slider(value: $videoQuality, in: 40...100, step: 1)
-                        .tint(.white)
+                    Spacer()
+                    Button("Check Now") {
+                        NotificationCenter.default.post(name: .checkForBurritoUpdates, object: nil)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.white.opacity(0.8))
                 }
+
             }
             .padding(.horizontal, 16)
-            .padding(.top, 16)
+            .padding(.top, 14)
             
             Spacer(minLength: 0)
         }
         .frame(width: 340, height: 180)
-        .background(Color.black)
+        .background(Color.clear)
         .preferredColorScheme(.dark)
     }
 }

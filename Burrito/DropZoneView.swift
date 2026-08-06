@@ -1,79 +1,45 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// Fanned preview stack
-struct FannedImageStack: View {
-    var images: [NSImage]
-    @State private var isPulsing = false
-    
-    var body: some View {
-        ZStack {
-            ForEach(Array(images.enumerated()), id: \.offset) { index, image in
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 36, height: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.4), lineWidth: 1))
-                    .shadow(color: .black.opacity(0.6), radius: 4, x: 0, y: 3)
-                    .rotationEffect(.degrees(rotation(for: index, total: images.count)))
-                    .offset(x: offsetX(for: index, total: images.count), y: offsetY(for: index, total: images.count))
-            }
-        }
-        .scaleEffect(isPulsing ? 1.05 : 0.95)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
-                isPulsing = true
-            }
-        }
-    }
-    
-    private func rotation(for index: Int, total: Int) -> Double {
-        if total == 1 { return 0 }
-        if total == 2 { return index == 0 ? -12 : 12 }
-        return index == 0 ? -18 : (index == 1 ? 0 : 18)
-    }
-    private func offsetX(for index: Int, total: Int) -> CGFloat {
-        if total == 1 { return 0 }
-        if total == 2 { return index == 0 ? -10 : 10 }
-        return index == 0 ? -15 : (index == 1 ? 0 : 15)
-    }
-    private func offsetY(for index: Int, total: Int) -> CGFloat {
-        if total == 1 { return 0 }
-        if total == 2 { return 2 }
-        return index == 1 ? -4 : 6
-    }
-}
-
 struct DropZoneView: View {
     @Binding var showSettings: Bool
-    @StateObject var processor = ImageProcessor()
+    @ObservedObject var processor: ImageProcessor
+    @AppStorage("enginePreset") private var enginePreset = "balanced"
     @State private var isTargetedPNG = false
     @State private var isTargetedWebP = false
+    @Namespace private var engineTabAnimation
     
     var body: some View {
         VStack(spacing: 0) {
             headerView
-            
+
+            engineSelector
+                .padding(.horizontal, 12)
+                .padding(.top, 7)
+                .padding(.bottom, 5)
+
             ZStack {
                 splitZonesView
+                if !isDropHovering && !processor.isProcessing {
+                    idleDropView
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
                 processingZoneView
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .animation(.easeInOut(duration: 0.4), value: processor.isProcessing)
-            .padding(2)
-            .overlay(borderOverlay)
-            .padding(12)
+            .overlay {
+                borderOverlay
+                    .allowsHitTesting(false)
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
         }
         .frame(width: 340, height: 180)
-        .background(Color.black)
+        .background(Color.clear)
         .preferredColorScheme(.dark)
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("MediaDragEntered"))) { notification in
-            if let type = notification.object as? MediaType {
-                processor.detectedMediaType = type
-            }
-        }
     }
 
     private var headerView: some View {
@@ -92,52 +58,168 @@ struct DropZoneView: View {
                     .foregroundColor(.gray)
             }
             .buttonStyle(.plain)
+
+            Button(action: {
+                NotificationCenter.default.post(name: .dismissDropShelf, object: nil)
+            }) {
+                Image(systemName: "xmark")
+                    .foregroundColor(.gray)
+            }
+            .buttonStyle(.plain)
         }
         .foregroundColor(.white)
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(Color(white: 0.05))
+        .padding(.vertical, 10)
+        .background(Color.black.opacity(0.16))
+    }
+
+    private var engineSelector: some View {
+        HStack(spacing: 3) {
+            engineTab("Fast", value: "fast")
+            engineTab("Balanced", value: "balanced")
+            engineTab("Smallest", value: "smallest")
+        }
+        .padding(3)
+        .background(Color.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.1), lineWidth: 0.75))
+        .disabled(processor.isBatchRunning)
+        .opacity(processor.isBatchRunning ? 0.55 : 1)
+        .help("Compression effort for every dropped file")
+    }
+
+    private func engineTab(_ title: String, value: String) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                enginePreset = value
+            }
+        } label: {
+            ZStack {
+                if enginePreset == value {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.white.opacity(0.15))
+                        .matchedGeometryEffect(id: "engineTabSelection", in: engineTabAnimation)
+                }
+
+                Text(title)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundColor(enginePreset == value ? .white : .white.opacity(0.5))
+            }
+            .frame(height: 20)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .accessibilityValue(enginePreset == value ? "Selected" : "")
+    }
+
+    private var isDropHovering: Bool {
+        isTargetedPNG || isTargetedWebP
+    }
+
+    private var idleDropView: some View {
+        VStack(spacing: 5) {
+            ZStack {
+                idleIcon("photo.fill", rotation: -13, x: -22, y: 2)
+                idleIcon("doc.fill", rotation: 0, x: 0, y: -3)
+                idleIcon("play.rectangle.fill", rotation: 13, x: 22, y: 2)
+            }
+            .compositingGroup()
+            .frame(height: 30)
+
+            Text("Drop images, video, or PDFs")
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .foregroundColor(.white.opacity(0.82))
+
+        }
+    }
+
+    private func idleIcon(_ name: String, rotation: Double, x: CGFloat, y: CGFloat) -> some View {
+        ZStack {
+            Image(systemName: name)
+                .symbolRenderingMode(.monochrome)
+                .font(.system(size: 24, weight: .bold))
+                .foregroundColor(.black)
+                .blendMode(.destinationOut)
+
+            Image(systemName: name)
+                .symbolRenderingMode(.monochrome)
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundColor(.white.opacity(0.94))
+        }
+            .rotationEffect(.degrees(rotation))
+            .offset(x: x, y: y)
     }
 
     private var splitZonesView: some View {
         HStack(spacing: 0) {
             ZStack {
                 Rectangle().fill(isTargetedPNG ? Color.white.opacity(0.1) : Color.clear)
-                Text(processor.detectedMediaType == .mixed ? "PNG / MP4" : (processor.detectedMediaType == .video ? "MP4" : "PNG"))
+                Text(highQualityDropLabel)
                     .font(.system(size: 14, weight: .bold, design: .rounded))
                     .tracking(1)
                     .foregroundColor(.white.opacity(0.8))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.62)
+                    .padding(.horizontal, 8)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
-            .onDrop(of: [.fileURL], isTargeted: $isTargetedPNG) { p in 
-                handleDrop(p, strategy: .highQuality) 
-            }
+            .onDrop(of: [.fileURL], delegate: MediaDropDelegate(
+                isTargeted: $isTargetedPNG,
+                processor: processor,
+                strategy: .highQuality
+            ))
             
             Rectangle().fill(Color.white.opacity(0.15)).frame(width: 1).padding(.vertical, 24)
             
             ZStack {
                 Rectangle().fill(isTargetedWebP ? Color.white.opacity(0.1) : Color.clear)
-                Text(processor.detectedMediaType == .mixed ? "WEBP / WEBM" : (processor.detectedMediaType == .video ? "WEBM" : "WEBP"))
+                Text(webDropLabel)
                     .font(.system(size: 14, weight: .bold, design: .rounded))
                     .tracking(1)
                     .foregroundColor(.white.opacity(0.8))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.62)
+                    .padding(.horizontal, 8)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
-            .onDrop(of: [.fileURL], isTargeted: $isTargetedWebP) { p in 
-                handleDrop(p, strategy: .webOptimized) 
-            }
+            .onDrop(of: [.fileURL], delegate: MediaDropDelegate(
+                isTargeted: $isTargetedWebP,
+                processor: processor,
+                strategy: .webOptimized
+            ))
         }
-        .opacity(processor.isProcessing ? 0 : 1)
+        .opacity(processor.isProcessing ? 0 : (isDropHovering ? 1 : 0.001))
         .allowsHitTesting(!processor.isProcessing)
+        .animation(.easeOut(duration: 0.14), value: isDropHovering)
+    }
+
+    private var highQualityDropLabel: String {
+        switch processor.detectedMediaType {
+        case .pdf: return "PDF"
+        case .video: return "MP4"
+        case .mixed: return "PNG / MP4 / PDF"
+        default: return "PNG"
+        }
+    }
+
+    private var webDropLabel: String {
+        switch processor.detectedMediaType {
+        case .pdf: return "PDF"
+        case .video: return "WEBM"
+        case .mixed: return "WEBP / WEBM / PDF"
+        default: return "WEBP"
+        }
     }
 
 
     private var processingZoneView: some View {
         GeometryReader { geo in
             if processor.isProcessing {
-                TimelineView(.animation(minimumInterval: 1/60)) { timeline in
+                TimelineView(.animation(minimumInterval: 1/30)) { timeline in
                     processingContent(geo: geo, timeline: timeline)
                 }
                 .transition(.opacity)
@@ -148,143 +230,236 @@ struct DropZoneView: View {
 
     private func processingContent(geo: GeometryProxy, timeline: TimelineViewDefaultContext) -> some View {
         let elapsedTime = timeline.date.timeIntervalSince(processor.processingStartTime)
-        let dropTime = elapsedTime.truncatingRemainder(dividingBy: 2.0)
-        let successTime = timeline.date.timeIntervalSince(processor.successStartTime)
-
-        let isSuccess = processor.isSuccess
-        let isError = processor.isError
-        let isComplete = isSuccess || isError
-        
-        let rippleTime = isComplete ? successTime : dropTime
-        let amplitude: Float = isComplete ? 1.5 : 12.0
-        let frequency: Float = isComplete ? 20.0 : 15.0
-        let decay: Float     = isComplete ? 5.0 : 8.0
-        let speed: Float     = isComplete ? 900.0 : 1000.0
+        let isComplete = !processor.isBatchRunning
+        let hasFailures = processor.failureCount > 0
+        let shaderState: Float = hasFailures ? 2.0 : (isComplete ? 1.0 : 0.0)
 
         return ZStack {
-            // Background
-            ZStack {
-                Color.black
-                Circle()
-                    .fill(isError ? Color.red.opacity(0.6) : Color(red: 0.20, green: 0.764, blue: 0.388).opacity(isSuccess ? 0.6 : 0.3))
-                    .frame(width: 160)
-                    .blur(radius: 40)
-                    .offset(x: -40, y: -20)
-                Circle()
-                    .fill(isError ? Color.red.opacity(0.3) : Color.white.opacity(0.15))
-                    .frame(width: 140)
-                    .blur(radius: 40)
-                    .offset(x: 50, y: 30)
-            }
-            .scaleEffect(1.2)
+            Rectangle()
+                .fill(Color.white.opacity(0.025))
             .layerEffect(
                 ShaderLibrary.modernFluid(
                     .float(elapsedTime),
-                    .float2(Float(geo.size.width), Float(geo.size.height))
+                    .float2(Float(geo.size.width), Float(geo.size.height)),
+                    .float(shaderState)
                 ),
                 maxSampleOffset: CGSize(width: 10, height: 10)
             )
 
-            // Foreground
-            VStack(spacing: 12) {
-                Spacer()
-
-                if isSuccess {
-                    statusView(icon: "checkmark.circle.fill", color: Color(red: 0.2, green: 0.8, blue: 0.4), text: "SUCCESS", savings: processor.savingsPercentage)
-                } else if isError {
-                    statusView(icon: "exclamationmark.triangle.fill", color: .red, text: processor.errorMessage ?? "ERROR", isError: true)
+            Group {
+                if processor.isBatchRunning {
+                    batchProgressView
                 } else {
-                    processingIndicator
+                    batchSummaryView
                 }
             }
-            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: isSuccess)
-            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: isError)
+            .animation(.easeOut(duration: 0.18), value: processor.isBatchRunning)
         }
-        .layerEffect(
-            ShaderLibrary.Ripple(
-                .float2(Float(geo.size.width / 2), Float(geo.size.height / 2)),
-                .float(Float(rippleTime)),
-                .float(amplitude),
-                .float(frequency),
-                .float(decay),
-                .float(speed)
-            ),
-            maxSampleOffset: CGSize(width: 40, height: 40),
-            isEnabled: true
-        )
     }
 
-    private func statusView(icon: String, color: Color, text: String, isError: Bool = false, savings: Int? = nil) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 42))
-                .foregroundColor(color)
-                .shadow(color: color.opacity(0.5), radius: 8, x: 0, y: 0)
-                .transition(.asymmetric(
-                    insertion: .scale(scale: 0.9).combined(with: .opacity),
-                    removal: .opacity
-                ))
+    private var batchProgressView: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("\(processor.completedCount) OF \(processor.totalCount)")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .tracking(1.1)
+                Spacer()
+                Text("\(Int(processor.batchProgress * 100))%")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.65))
+            }
 
-            HStack(spacing: 6) {
-                Text(text)
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .tracking(2.0)
-                    .foregroundColor(.white)
-                
-                if let savings = savings, savings > 0 {
-                    Text("-\(savings)%")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .foregroundColor(Color(red: 0.2, green: 0.8, blue: 0.4))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color(red: 0.2, green: 0.8, blue: 0.4).opacity(0.15))
-                        .clipShape(Capsule())
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.13))
+                    Capsule()
+                        .fill(Color.white.opacity(0.82))
+                        .frame(width: max(0, geometry.size.width * processor.batchProgress))
                 }
             }
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, isError ? 20 : 0)
-            .padding(.bottom, 16)
+            .frame(height: 6)
+
+            Text(processor.currentFileName ?? "Preparing files…")
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundColor(.white.opacity(0.78))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack {
+                if processor.failureCount > 0 {
+                    Text("\(processor.failureCount) failed")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundColor(.orange)
+                }
+                Spacer()
+                Button("Cancel") {
+                    processor.cancelProcessing()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(.white.opacity(0.68))
+            }
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    private var batchSummaryView: some View {
+        let hasFailures = processor.failureCount > 0
+        let wasCancelled = processor.cancelledCount > 0
+        let color: Color = hasFailures ? .orange : (wasCancelled ? .gray : Color(red: 0.2, green: 0.8, blue: 0.4))
+        let icon = hasFailures ? "exclamationmark.triangle.fill" : (wasCancelled ? "stop.circle.fill" : "checkmark.circle.fill")
+
+        return HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 30))
+                .foregroundColor(color)
+                .shadow(color: color.opacity(0.35), radius: 6)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(summaryTitle)
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                HStack(spacing: 6) {
+                    Text(summarySubtitle)
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.66))
+                    if let savings = processor.savingsPercentage, savings > 0 {
+                        Text("−\(savings)%")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundColor(Color(red: 0.2, green: 0.8, blue: 0.4))
+                    }
+                }
+                if let failure = processor.firstFailure {
+                    Text(failure.message)
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .foregroundColor(.orange.opacity(0.9))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help("\(failure.message) \(failure.suggestion)")
+                }
+            }
+
+            Spacer()
+
+            HStack(spacing: 6) {
+                if processor.retryableFailureCount > 0 {
+                    Button("Retry") {
+                        processor.retryFailedJobs()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.orange)
+                    .help("Retry only the files that failed")
+                }
+
+                Button("Done") {
+                    processor.dismissBatchResults()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(color)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+    }
+
+    private var summaryTitle: String {
+        if processor.failureCount > 0 { return "Completed with issues" }
+        if processor.cancelledCount > 0 { return "Conversion cancelled" }
+        return processor.successCount == 1 ? "1 file optimized" : "\(processor.successCount) files optimized"
+    }
+
+    private var summarySubtitle: String {
+        var parts: [String] = []
+        if processor.successCount > 0 { parts.append("\(processor.successCount) succeeded") }
+        if processor.failureCount > 0 { parts.append("\(processor.failureCount) failed") }
+        if processor.cancelledCount > 0 { parts.append("\(processor.cancelledCount) cancelled") }
+        return parts.joined(separator: " • ")
+    }
+
+    @ViewBuilder
+    private var borderOverlay: some View {
+        if !processor.isProcessing {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.white.opacity(0.15), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
+        } else {
+            TimelineView(.animation(minimumInterval: 1/30)) { timeline in
+                let elapsed = timeline.date.timeIntervalSince(processor.processingStartTime)
+                let completionColor: Color = processor.failureCount > 0
+                    ? .orange
+                    : (processor.cancelledCount > 0 ? .gray : Color(red: 0.24, green: 0.94, blue: 0.58))
+
+                if processor.isBatchRunning {
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(
+                            AngularGradient(
+                                colors: [.green, .mint, .cyan, .blue, .cyan, .green],
+                                center: .center,
+                                startAngle: .degrees(elapsed * 34 * processor.meshMotionRate),
+                                endAngle: .degrees(360 + elapsed * 34 * processor.meshMotionRate)
+                            ),
+                            lineWidth: 3
+                        )
+                        .shadow(color: .cyan.opacity(0.42), radius: 7)
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(completionColor.opacity(0.075))
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(
+                                AngularGradient(
+                                    colors: [.green.opacity(0.7), .mint, .cyan, .blue, .cyan, .green.opacity(0.7)],
+                                    center: .center,
+                                    startAngle: .degrees(elapsed * 12),
+                                    endAngle: .degrees(360 + elapsed * 12)
+                                ),
+                                lineWidth: 2.5
+                            )
+                            .shadow(color: completionColor.opacity(0.8), radius: 8)
+                    }
+                }
+            }
             .transition(.opacity)
         }
     }
-
-    private var processingIndicator: some View {
-        VStack(spacing: 12) {
-            FannedImageStack(images: processor.processingImages)
-                .transition(.asymmetric(
-                    insertion: .opacity,
-                    removal: .scale(scale: 0.9).combined(with: .opacity)
-                ))
-
-            Text("PROCESSING")
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-                .tracking(1.5)
-                .foregroundColor(.white.opacity(0.9))
-                .padding(.bottom, 16)
-                .transition(.opacity)
-        }
-    }
-
-    private var borderOverlay: some View {
-        RoundedRectangle(cornerRadius: 12)
-            .stroke(processor.isProcessing ? (processor.isSuccess ? Color.green.opacity(0.4) : (processor.isError ? Color.red.opacity(0.4) : Color.white.opacity(0.3))) : Color.white.opacity(0.15), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
-            .animation(.easeInOut, value: processor.isProcessing)
-    }
     
-    private func handleDrop(_ providers: [NSItemProvider], strategy: ProcessingStrategy) -> Bool {
+}
+
+private struct MediaDropDelegate: DropDelegate {
+    @Binding var isTargeted: Bool
+    let processor: ImageProcessor
+    let strategy: ProcessingStrategy
+
+    func validateDrop(info: DropInfo) -> Bool {
+        !processor.isProcessing && info.hasItemsConforming(to: [.fileURL])
+    }
+
+    func dropEntered(info: DropInfo) {
+        isTargeted = true
+        processor.previewMediaType(from: info.itemProviders(for: [.fileURL]))
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .copy)
+    }
+
+    func dropExited(info: DropInfo) {
+        isTargeted = false
+        processor.clearMediaTypePreview()
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
         guard !processor.isProcessing else { return false }
-        var urls: [URL] = []
-        let group = DispatchGroup()
-        for provider in providers {
-            group.enter()
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
-                if let data = data, let url = URL(dataRepresentation: data, relativeTo: nil) { urls.append(url) }
-                group.leave()
-            }
-        }
-        group.notify(queue: .main) {
-            if !urls.isEmpty { processor.processDroppedURLs(urls, strategy: strategy) }
-        }
+        isTargeted = false
+        processor.processDroppedProviders(
+            info.itemProviders(for: [.fileURL]),
+            strategy: strategy
+        )
         return true
     }
 }
