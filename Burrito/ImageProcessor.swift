@@ -4,6 +4,7 @@ import SwiftUI
 import Combine
 import PDFKit
 import AppKit
+import ImageIO
 
 enum TargetFormat: Equatable {
     case png
@@ -23,7 +24,7 @@ enum TargetFormat: Equatable {
     }
 }
 
-enum ProcessingStrategy {
+enum ProcessingStrategy: Equatable {
     case highQuality
     case webOptimized
 }
@@ -36,27 +37,10 @@ enum MediaType {
     case unknown
 }
 
-enum ConversionFailureKind {
-    case unsupportedFile
-    case unreadableInput
-    case outputFolder
-    case toolUnavailable
-    case permissionDenied
-    case insufficientSpace
-    case qualityThreshold
-    case encoderRejected
-    case invalidOutput
-    case unexpected
-}
-
 struct ConversionFailure: Error {
-    let kind: ConversionFailureKind
     let title: String
     let message: String
     let suggestion: String
-    let technicalDetails: String?
-
-    var displayMessage: String { "\(title): \(message)" }
 }
 
 enum ConversionJobState {
@@ -74,12 +58,10 @@ enum ConversionJobState {
     }
 }
 
-struct ConversionJob: Identifiable {
-    let id = UUID()
+struct ConversionJob {
     let sourceURL: URL
     let targetFormat: TargetFormat?
     var state: ConversionJobState
-    var outputURL: URL?
 
     var displayName: String { sourceURL.lastPathComponent }
 }
@@ -87,7 +69,6 @@ struct ConversionJob: Identifiable {
 private struct ConversionOutput {
     let originalSize: Int64
     let optimizedSize: Int64
-    let outputURL: URL
 }
 
 private struct CommandResult {
@@ -95,55 +76,11 @@ private struct CommandResult {
     let standardError: String
 }
 
-private final class LockedURLSlots: @unchecked Sendable {
-    private let lock = NSLock()
-    private var urls: [URL?]
-
-    init(count: Int) {
-        urls = Array(repeating: nil, count: count)
-    }
-
-    func set(_ url: URL, at index: Int) {
-        lock.lock()
-        urls[index] = url
-        lock.unlock()
-    }
-
-    func collected() -> [URL] {
-        lock.lock()
-        defer { lock.unlock() }
-        return urls.compactMap { $0 }
-    }
-}
-
-private final class BatchMetrics: @unchecked Sendable {
-    private let lock = NSLock()
-    private var originalBytes: Int64 = 0
-    private var optimizedBytes: Int64 = 0
-
-    func add(_ output: ConversionOutput) {
-        lock.lock()
-        originalBytes += output.originalSize
-        optimizedBytes += output.optimizedSize
-        lock.unlock()
-    }
-
-    func snapshot() -> (original: Int64, optimized: Int64) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (originalBytes, optimizedBytes)
-    }
-}
-
 final class ImageProcessor: ObservableObject {
     @Published var isProcessing = false
     @Published var isBatchRunning = false
-    @Published var isSuccess = false
-    @Published var isError = false
-    @Published var errorMessage: String?
     @Published var savingsPercentage: Int?
     @Published var processingStartTime = Date()
-    @Published var successStartTime = Date()
     @Published var detectedMediaType: MediaType = .unknown
     @Published var jobs: [ConversionJob] = []
     @Published var meshMotionRate = 0.55
@@ -245,9 +182,6 @@ final class ImageProcessor: ObservableObject {
         withAnimation(.easeInOut(duration: 0.22)) {
             isProcessing = true
             isBatchRunning = true
-            isSuccess = false
-            isError = false
-            errorMessage = nil
             savingsPercentage = nil
             processingStartTime = Date()
             meshMotionRate = 0.55
@@ -268,15 +202,11 @@ final class ImageProcessor: ObservableObject {
         for index in jobs.indices where jobs[index].targetFormat != nil {
             if case .failed = jobs[index].state {
                 jobs[index].state = .queued
-                jobs[index].outputURL = nil
             }
         }
 
         withAnimation(.easeInOut(duration: 0.18)) {
             isBatchRunning = true
-            isSuccess = false
-            isError = false
-            errorMessage = nil
             savingsPercentage = nil
             processingStartTime = Date()
             meshMotionRate = 0.55
@@ -290,7 +220,8 @@ final class ImageProcessor: ObservableObject {
 
         let workerCount = adaptiveWorkerCount(for: queuedJobs)
         let group = DispatchGroup()
-        let metrics = BatchMetrics()
+        var totalOriginal: Int64 = 0
+        var totalOptimized: Int64 = 0
         let operationQueue = OperationQueue()
         operationQueue.name = "com.arjoon.burrito.conversion"
         operationQueue.qualityOfService = .userInitiated
@@ -322,8 +253,8 @@ final class ImageProcessor: ObservableObject {
                     } else {
                         switch result {
                         case let .success(output):
-                            metrics.add(output)
-                            self.jobs[index].outputURL = output.outputURL
+                            totalOriginal += output.originalSize
+                            totalOptimized += output.optimizedSize
                             self.jobs[index].state = .succeeded
                         case let .failure(failure):
                             self.jobs[index].state = .failed(failure)
@@ -336,21 +267,18 @@ final class ImageProcessor: ObservableObject {
 
         group.notify(queue: .main) {
             _ = operationQueue.operationCount
-            let totals = metrics.snapshot()
-            if totals.original > 0 {
-                let savings = Double(totals.original - totals.optimized) / Double(totals.original)
+            if totalOriginal > 0 {
+                let savings = Double(totalOriginal - totalOptimized) / Double(totalOriginal)
                 self.savingsPercentage = max(0, Int(savings * 100))
             }
 
             withAnimation(.easeOut(duration: 0.2)) {
                 self.isBatchRunning = false
-                self.isSuccess = self.successCount > 0
-                self.isError = self.failureCount > 0
-                self.errorMessage = self.firstFailure?.displayMessage
                 self.meshMotionRate = 0.24
-                self.successStartTime = Date()
             }
-            self.scheduleAutoDismiss()
+            if self.failureCount == 0 {
+                self.scheduleAutoDismiss()
+            }
         }
     }
 
@@ -371,15 +299,12 @@ final class ImageProcessor: ObservableObject {
     func dismissBatchResults() {
         guard !isBatchRunning else { return }
         autoDismissWorkItem?.cancel()
-        withAnimation(.easeOut(duration: 0.2)) {
+        savingsPercentage = nil
+        jobs = []
+        detectedMediaType = .unknown
+        meshMotionRate = 0.55
+        withAnimation(.easeInOut(duration: 0.18)) {
             isProcessing = false
-            isSuccess = false
-            isError = false
-            errorMessage = nil
-            savingsPercentage = nil
-            jobs = []
-            detectedMediaType = .unknown
-            meshMotionRate = 0.55
         }
     }
 
@@ -459,21 +384,27 @@ final class ImageProcessor: ObservableObject {
     }
 
     private func loadURLs(from providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
-        let slots = LockedURLSlots(count: providers.count)
+        var slots = Array<URL?>(repeating: nil, count: providers.count)
+        let slotsLock = NSLock()
         let group = DispatchGroup()
 
         for (index, provider) in providers.enumerated() {
             group.enter()
             provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
                 if let data, let url = URL(dataRepresentation: data, relativeTo: nil) {
-                    slots.set(url, at: index)
+                    slotsLock.lock()
+                    slots[index] = url
+                    slotsLock.unlock()
                 }
                 group.leave()
             }
         }
 
         group.notify(queue: .main) {
-            completion(slots.collected())
+            slotsLock.lock()
+            let urls = slots.compactMap(\.self)
+            slotsLock.unlock()
+            completion(urls)
         }
     }
 
@@ -503,11 +434,9 @@ final class ImageProcessor: ObservableObject {
                 sourceURL: url,
                 targetFormat: nil,
                 state: .failed(ConversionFailure(
-                    kind: .unreadableInput,
                     title: "File can’t be read",
                     message: "Burrito does not have permission to read \(url.lastPathComponent).",
-                    suggestion: "Move the file to a writable folder or grant Burrito file access, then try again.",
-                    technicalDetails: nil
+                    suggestion: "Move the file to a writable folder or grant Burrito file access, then try again."
                 ))
             )
         }
@@ -519,11 +448,9 @@ final class ImageProcessor: ObservableObject {
                 sourceURL: url,
                 targetFormat: nil,
                 state: .failed(ConversionFailure(
-                    kind: .unsupportedFile,
                     title: "Unsupported file",
                     message: "\(url.lastPathComponent) is not a recognized image, video, or PDF.",
-                    suggestion: "Drop an image, video, or PDF file instead.",
-                    technicalDetails: nil
+                    suggestion: "Drop an image, video, or PDF file instead."
                 ))
             )
         }
@@ -600,21 +527,17 @@ final class ImageProcessor: ObservableObject {
             try fileManager.createDirectory(at: optimizedDirectory, withIntermediateDirectories: true)
         } catch {
             return .failure(ConversionFailure(
-                kind: .outputFolder,
                 title: "Output folder unavailable",
                 message: "Burrito could not prepare the output location for \(sourceURL.lastPathComponent).",
-                suggestion: "Choose a source folder where you have write permission.",
-                technicalDetails: error.localizedDescription
+                suggestion: "Choose a source folder where you have write permission."
             ))
         }
 
         guard fileManager.isWritableFile(atPath: optimizedDirectory.path) else {
             return .failure(ConversionFailure(
-                kind: .permissionDenied,
                 title: "Output folder is read-only",
                 message: "Burrito cannot save beside \(sourceURL.lastPathComponent).",
-                suggestion: "Move the source to a writable folder, then try again.",
-                technicalDetails: optimizedDirectory.path
+                suggestion: "Move the source to a writable folder, then try again."
             ))
         }
 
@@ -650,11 +573,25 @@ final class ImageProcessor: ObservableObject {
                     var pdfInputURL = sourceURL
                     var shouldRemoveStagingFile = false
 
-                    if enginePreset != "fast", let document = PDFDocument(url: sourceURL) {
-                        if enginePreset == "smallest",
-                           let compressedData = try aggressivelyCompressedPDF(
+                    if let document = PDFDocument(url: sourceURL) {
+                        let explicitTarget = configuredPDFTargetBytes
+                        let targetBytes = pdfTargetBytes(
+                            originalSize: originalSize,
+                            preset: enginePreset,
+                            explicitTarget: explicitTarget
+                        )
+                        let exceedsExplicitTarget = explicitTarget.map { originalSize > Int64($0) } ?? false
+                        let shouldRasterize = exceedsExplicitTarget
+                            || enginePreset == "smallest"
+                            || (enginePreset == "balanced" && (
+                                explicitTarget != nil || isImageHeavyPDF(document)
+                            ))
+
+                        if shouldRasterize,
+                           let compressedData = try adaptivelyCompressedPDF(
                                from: document,
-                               targetBytes: 800_000
+                               targetBytes: targetBytes,
+                               preset: enginePreset
                            ) {
                             try compressedData.write(to: stagingURL, options: .atomic)
                             pdfInputURL = stagingURL
@@ -733,11 +670,9 @@ final class ImageProcessor: ObservableObject {
                 guard quantize.status == 0 else {
                     if quantize.status == 99 {
                         return .failure(ConversionFailure(
-                            kind: .qualityThreshold,
                             title: "Couldn’t meet the quality target",
                             message: "Optimizing \(sourceURL.lastPathComponent) at the selected quality would not produce a valid result.",
-                            suggestion: "Lower the image-quality setting or use WebP.",
-                            technicalDetails: cleanedDetails(quantize.standardError)
+                            suggestion: "Lower the image-quality setting or use WebP."
                         ))
                     }
                     return .failure(failure(for: quantize, tool: "PNG optimizer", sourceURL: sourceURL))
@@ -757,11 +692,9 @@ final class ImageProcessor: ObservableObject {
             var optimizedSize = ((try? fileManager.attributesOfItem(atPath: temporaryURL.path)[.size]) as? NSNumber)?.int64Value ?? 0
             guard optimizedSize > 0 else {
                 return .failure(ConversionFailure(
-                    kind: .invalidOutput,
                     title: "Encoder produced no output",
                     message: "The converted copy of \(sourceURL.lastPathComponent) was empty.",
-                    suggestion: "Check that the source opens normally, then try another format.",
-                    technicalDetails: nil
+                    suggestion: "Check that the source opens normally, then try another format."
                 ))
             }
 
@@ -769,6 +702,16 @@ final class ImageProcessor: ObservableObject {
                 try fileManager.removeItem(at: temporaryURL)
                 try fileManager.copyItem(at: sourceURL, to: temporaryURL)
                 optimizedSize = originalSize
+            }
+
+            if targetFormat == .pdf,
+               let targetBytes = configuredPDFTargetBytes,
+               optimizedSize > Int64(targetBytes) {
+                return .failure(ConversionFailure(
+                    title: "PDF target could not be reached",
+                    message: "The smallest valid result was \(formattedByteCount(optimizedSize)), above the selected \(formattedByteCount(Int64(targetBytes))) target.",
+                    suggestion: "Use Smallest, choose a larger PDF target, or split this document into smaller files."
+                ))
             }
 
             outputLock.lock()
@@ -786,18 +729,15 @@ final class ImageProcessor: ObservableObject {
             shouldRemoveOutputReservation = false
             return .success(ConversionOutput(
                 originalSize: originalSize,
-                optimizedSize: optimizedSize,
-                outputURL: finalURL
+                optimizedSize: optimizedSize
             ))
         } catch let failure as ConversionFailure {
             return .failure(failure)
         } catch {
             return .failure(ConversionFailure(
-                kind: .unexpected,
                 title: "Conversion could not finish",
                 message: "Burrito could not finish \(sourceURL.lastPathComponent).",
-                suggestion: "Check the source file and available disk space, then try again.",
-                technicalDetails: error.localizedDescription
+                suggestion: "Check the source file and available disk space, then try again."
             ))
         }
     }
@@ -816,15 +756,75 @@ final class ImageProcessor: ObservableObject {
         return candidate
     }
 
-    private func aggressivelyCompressedPDF(from document: PDFDocument, targetBytes: Int) throws -> Data? {
-        let attempts: [(dpi: CGFloat, quality: CGFloat)] = [
-            (96, 0.42),
-            (72, 0.30),
-            (54, 0.20),
-            (40, 0.12),
-            (30, 0.08),
-            (24, 0.05)
-        ]
+    private var configuredPDFTargetBytes: Int? {
+        let value = UserDefaults.standard.integer(forKey: "pdfTargetBytes")
+        return value > 0 ? value : nil
+    }
+
+    private func pdfTargetBytes(
+        originalSize: Int64,
+        preset: String,
+        explicitTarget: Int?
+    ) -> Int {
+        let presetTarget: Int
+        switch preset {
+        case "smallest":
+            presetTarget = min(900_000, max(120_000, Int(Double(originalSize) * 0.25)))
+        case "balanced":
+            presetTarget = max(180_000, Int(Double(originalSize) * 0.60))
+        default:
+            presetTarget = Int(originalSize)
+        }
+        guard let explicitTarget else { return presetTarget }
+        return min(presetTarget, explicitTarget)
+    }
+
+    private func isImageHeavyPDF(_ document: PDFDocument) -> Bool {
+        guard document.pageCount > 0 else { return false }
+        let characterCount = (0..<document.pageCount).reduce(into: 0) { count, index in
+            count += document.page(at: index)?.string?.count ?? 0
+        }
+        return characterCount < document.pageCount * 40
+    }
+
+    private func adaptivelyCompressedPDF(
+        from document: PDFDocument,
+        targetBytes: Int,
+        preset: String
+    ) throws -> Data? {
+        let attempts: [(dpi: CGFloat, quality: CGFloat)]
+        if preset == "smallest" {
+            attempts = [
+                (120, 0.52),
+                (96, 0.42),
+                (72, 0.30),
+                (54, 0.22),
+                (42, 0.16),
+                (36, 0.12),
+                (30, 0.09),
+                (24, 0.06)
+            ]
+        } else if preset == "balanced" {
+            attempts = [
+                (144, 0.68),
+                (132, 0.62),
+                (120, 0.56),
+                (108, 0.50),
+                (96, 0.44),
+                (84, 0.38),
+                (72, 0.32),
+                (60, 0.26),
+                (48, 0.20)
+            ]
+        } else {
+            attempts = [
+                (144, 0.68),
+                (108, 0.50),
+                (84, 0.38),
+                (60, 0.26),
+                (42, 0.18)
+            ]
+        }
         var smallestResult: Data?
 
         for attempt in attempts {
@@ -853,50 +853,78 @@ final class ImageProcessor: ObservableObject {
         guard let consumer = CGDataConsumer(data: pdfData),
               let pdfContext = CGContext(consumer: consumer, mediaBox: nil, nil) else {
             throw ConversionFailure(
-                kind: .invalidOutput,
                 title: "PDF compression could not start",
                 message: "Burrito could not create the compact PDF container.",
-                suggestion: "Try Balanced mode or verify that the PDF opens normally.",
-                technicalDetails: nil
+                suggestion: "Verify that the source PDF opens normally, then try a larger PDF target."
             )
         }
 
+        var writtenPageCount = 0
         for pageIndex in 0..<document.pageCount {
-            guard let page = document.page(at: pageIndex) else { continue }
+            guard let page = document.page(at: pageIndex) else {
+                throw pdfRasterizationFailure(pageIndex: pageIndex)
+            }
             let bounds = page.bounds(for: .mediaBox)
-            guard bounds.width > 0, bounds.height > 0 else { continue }
+            guard bounds.width > 0, bounds.height > 0 else {
+                throw pdfRasterizationFailure(pageIndex: pageIndex)
+            }
 
             let pixelsWide = max(1, Int((bounds.width * dpi / 72).rounded()))
             let pixelsHigh = max(1, Int((bounds.height * dpi / 72).rounded()))
-            guard let bitmap = NSBitmapImageRep(
-                bitmapDataPlanes: nil,
-                pixelsWide: pixelsWide,
-                pixelsHigh: pixelsHigh,
-                bitsPerSample: 8,
-                samplesPerPixel: 4,
-                hasAlpha: false,
-                isPlanar: false,
-                colorSpaceName: .deviceRGB,
-                bitmapFormat: [],
+            guard let bitmapContext = CGContext(
+                data: nil,
+                width: pixelsWide,
+                height: pixelsHigh,
+                bitsPerComponent: 8,
                 bytesPerRow: 0,
-                bitsPerPixel: 0
-            ) else { continue }
-
-            guard let graphicsContext = NSGraphicsContext(bitmapImageRep: bitmap) else { continue }
-            let bitmapContext = graphicsContext.cgContext
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                throw pdfRasterizationFailure(pageIndex: pageIndex)
+            }
             bitmapContext.setFillColor(NSColor.white.cgColor)
             bitmapContext.fill(CGRect(x: 0, y: 0, width: pixelsWide, height: pixelsHigh))
-            bitmapContext.scaleBy(
-                x: CGFloat(pixelsWide) / bounds.width,
-                y: CGFloat(pixelsHigh) / bounds.height
-            )
-            bitmapContext.translateBy(x: -bounds.minX, y: -bounds.minY)
-            page.draw(with: .mediaBox, to: bitmapContext)
+            bitmapContext.saveGState()
+            if let pageRef = page.pageRef {
+                let targetRect = CGRect(x: 0, y: 0, width: pixelsWide, height: pixelsHigh)
+                bitmapContext.concatenate(pageRef.getDrawingTransform(
+                    .mediaBox,
+                    rect: targetRect,
+                    rotate: 0,
+                    preserveAspectRatio: true
+                ))
+                bitmapContext.drawPDFPage(pageRef)
+            } else {
+                bitmapContext.scaleBy(
+                    x: CGFloat(pixelsWide) / bounds.width,
+                    y: CGFloat(pixelsHigh) / bounds.height
+                )
+                bitmapContext.translateBy(x: -bounds.minX, y: -bounds.minY)
+                page.draw(with: .mediaBox, to: bitmapContext)
+            }
+            bitmapContext.restoreGState()
 
-            guard let jpegData = bitmap.representation(
-                using: .jpeg,
-                properties: [.compressionFactor: jpegQuality]
-            ), let pageImage = NSBitmapImageRep(data: jpegData)?.cgImage else { continue }
+            guard let renderedImage = bitmapContext.makeImage() else {
+                throw pdfRasterizationFailure(pageIndex: pageIndex)
+            }
+            let jpegData = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(
+                jpegData,
+                UTType.jpeg.identifier as CFString,
+                1,
+                nil
+            ) else {
+                throw pdfRasterizationFailure(pageIndex: pageIndex)
+            }
+            let jpegOptions = [
+                kCGImageDestinationLossyCompressionQuality: jpegQuality
+            ] as CFDictionary
+            CGImageDestinationAddImage(destination, renderedImage, jpegOptions)
+            guard CGImageDestinationFinalize(destination),
+                  let imageSource = CGImageSourceCreateWithData(jpegData, nil),
+                  let pageImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+                throw pdfRasterizationFailure(pageIndex: pageIndex)
+            }
 
             var mediaBox = CGRect(origin: .zero, size: bounds.size)
             let pageOptions = [kCGPDFContextMediaBox as String: NSData(
@@ -906,40 +934,49 @@ final class ImageProcessor: ObservableObject {
             pdfContext.beginPDFPage(pageOptions)
             pdfContext.draw(pageImage, in: mediaBox)
             pdfContext.endPDFPage()
+            writtenPageCount += 1
         }
 
         pdfContext.closePDF()
         let result = pdfData as Data
-        guard !result.isEmpty else {
+        guard !result.isEmpty,
+              writtenPageCount == document.pageCount,
+              PDFDocument(data: result)?.pageCount == document.pageCount else {
             throw ConversionFailure(
-                kind: .invalidOutput,
                 title: "PDF compression produced no pages",
-                message: "Burrito could not rasterize this PDF.",
-                suggestion: "Try Balanced mode for this document.",
-                technicalDetails: nil
+                message: "Burrito could not preserve every page in this PDF.",
+                suggestion: "Choose a larger PDF target or export a fresh copy of the source document."
             )
         }
         return result
+    }
+
+    private func pdfRasterizationFailure(pageIndex: Int) -> ConversionFailure {
+        ConversionFailure(
+            title: "Page \(pageIndex + 1) couldn’t compress",
+            message: "Burrito could not render page \(pageIndex + 1) into a compressed image.",
+            suggestion: "Choose a larger PDF target or export a fresh copy of the source document."
+        )
+    }
+
+    private func formattedByteCount(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     private func bundledTool(named name: String) throws -> URL {
         guard let url = Bundle.main.url(forResource: name, withExtension: nil),
               FileManager.default.fileExists(atPath: url.path) else {
             throw ConversionFailure(
-                kind: .toolUnavailable,
                 title: "Conversion tool is missing",
                 message: "The bundled \(name) tool could not be found.",
-                suggestion: "Reinstall Burrito and try again.",
-                technicalDetails: name
+                suggestion: "Reinstall Burrito and try again."
             )
         }
         guard FileManager.default.isExecutableFile(atPath: url.path) else {
             throw ConversionFailure(
-                kind: .toolUnavailable,
                 title: "Conversion tool cannot run",
                 message: "macOS blocked the bundled \(name) tool.",
-                suggestion: "Reinstall Burrito from a trusted build.",
-                technicalDetails: url.path
+                suggestion: "Reinstall Burrito from a trusted build."
             )
         }
         return url
@@ -974,69 +1011,47 @@ final class ImageProcessor: ObservableObject {
     }
 
     private func failure(for command: CommandResult, tool: String, sourceURL: URL) -> ConversionFailure {
-        let details = cleanedDetails(command.standardError)
         let lowercased = command.standardError.lowercased()
 
         if lowercased.contains("permission denied") || lowercased.contains("operation not permitted") {
             return ConversionFailure(
-                kind: .permissionDenied,
                 title: "Permission denied",
                 message: "macOS blocked access while processing \(sourceURL.lastPathComponent).",
-                suggestion: "Grant Burrito file access or move the source to another folder.",
-                technicalDetails: details
+                suggestion: "Grant Burrito file access or move the source to another folder."
             )
         }
         if lowercased.contains("no space left") || lowercased.contains("disk full") {
             return ConversionFailure(
-                kind: .insufficientSpace,
                 title: "Not enough disk space",
                 message: "There is not enough room to finish \(sourceURL.lastPathComponent).",
-                suggestion: "Free some disk space and retry.",
-                technicalDetails: details
+                suggestion: "Free some disk space and retry."
             )
         }
         if lowercased.contains("password") || lowercased.contains("encrypted") {
             return ConversionFailure(
-                kind: .encoderRejected,
                 title: "PDF is password protected",
                 message: "Burrito cannot optimize \(sourceURL.lastPathComponent) without its password.",
-                suggestion: "Save an unlocked copy of the PDF, then drop that copy into Burrito.",
-                technicalDetails: details
+                suggestion: "Save an unlocked copy of the PDF, then drop that copy into Burrito."
             )
         }
         if lowercased.contains("signature") || lowercased.contains("signed document") {
             return ConversionFailure(
-                kind: .encoderRejected,
                 title: "PDF contains a digital signature",
                 message: "Optimizing \(sourceURL.lastPathComponent) could invalidate its signature.",
-                suggestion: "Keep the signed original or optimize an unsigned copy.",
-                technicalDetails: details
+                suggestion: "Keep the signed original or optimize an unsigned copy."
             )
         }
         if lowercased.contains("invalid data") || lowercased.contains("corrupt") || lowercased.contains("cannot decode") {
             return ConversionFailure(
-                kind: .encoderRejected,
                 title: "File could not be decoded",
                 message: "\(sourceURL.lastPathComponent) may be damaged or use an unsupported codec.",
-                suggestion: "Open the file to verify it, or export it in a standard format first.",
-                technicalDetails: details
+                suggestion: "Open the file to verify it, or export it in a standard format first."
             )
         }
         return ConversionFailure(
-            kind: .encoderRejected,
             title: "\(tool) rejected the file",
             message: "\(sourceURL.lastPathComponent) could not be optimized.",
-            suggestion: "Try the other output format or adjust the quality setting.",
-            technicalDetails: details ?? "Exit status \(command.status)"
+            suggestion: "Try the other output format or adjust the quality setting."
         )
-    }
-
-    private func cleanedDetails(_ text: String) -> String? {
-        let lines = text
-            .split(whereSeparator: \Character.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        guard !lines.isEmpty else { return nil }
-        return lines.suffix(4).joined(separator: " · ").prefix(600).description
     }
 }

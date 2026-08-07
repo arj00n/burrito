@@ -5,9 +5,9 @@ struct DropZoneView: View {
     @Binding var showSettings: Bool
     @ObservedObject var processor: ImageProcessor
     @AppStorage("enginePreset") private var enginePreset = "balanced"
-    @State private var isTargetedPNG = false
-    @State private var isTargetedWebP = false
-    @State private var isTargetedPDF = false
+    @State private var isDropTargeted = false
+    @State private var activeDropStrategy: ProcessingStrategy = .highQuality
+    @Namespace private var engineTabAnimation
     
     var body: some View {
         VStack(spacing: 0) {
@@ -20,7 +20,7 @@ struct DropZoneView: View {
 
             ZStack {
                 splitZonesView
-                if !isDropHovering && !processor.isProcessing {
+                if !isDropTargeted && !processor.isProcessing {
                     idleDropView
                         .allowsHitTesting(false)
                         .transition(.opacity)
@@ -29,7 +29,13 @@ struct DropZoneView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 10))
-            .animation(.easeInOut(duration: 0.4), value: processor.isProcessing)
+            .contentShape(Rectangle())
+            .onDrop(of: [.fileURL], delegate: MediaDropDelegate(
+                isTargeted: $isDropTargeted,
+                activeStrategy: $activeDropStrategy,
+                processor: processor,
+                midpoint: 158
+            ))
             .overlay {
                 borderOverlay
                     .allowsHitTesting(false)
@@ -55,7 +61,7 @@ struct DropZoneView: View {
             
             Button(action: { showSettings = true }) {
                 Image(systemName: "gearshape.fill")
-                    .foregroundColor(.gray)
+                    .foregroundColor(.white.opacity(0.72))
             }
             .buttonStyle(.plain)
 
@@ -63,34 +69,56 @@ struct DropZoneView: View {
                 NotificationCenter.default.post(name: .dismissDropShelf, object: nil)
             }) {
                 Image(systemName: "xmark")
-                    .foregroundColor(.gray)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.72))
             }
             .buttonStyle(.plain)
         }
         .foregroundColor(.white)
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(Color.black.opacity(0.16))
+        .background(Color.black.opacity(0.22))
     }
 
     private var engineSelector: some View {
-        Picker("Compression", selection: $enginePreset) {
-            Text("Fast").tag("fast")
-            Text("Balanced").tag("balanced")
-            Text("Smallest").tag("smallest")
+        HStack(spacing: 3) {
+            engineTab("Fast", value: "fast")
+            engineTab("Balanced", value: "balanced")
+            engineTab("Smallest", value: "smallest")
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(maxWidth: .infinity)
-        .fixedSize(horizontal: false, vertical: true)
-        .clipShape(Capsule())
+        .padding(3)
+        .background(Color.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.16), lineWidth: 0.75))
         .disabled(processor.isBatchRunning)
         .opacity(processor.isBatchRunning ? 0.55 : 1)
         .help("Fast favors speed, Balanced mixes speed and size, and Smallest applies maximum compression")
     }
 
-    private var isDropHovering: Bool {
-        isTargetedPNG || isTargetedWebP || isTargetedPDF
+    private func engineTab(_ title: String, value: String) -> some View {
+        Button {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                enginePreset = value
+            }
+        } label: {
+            ZStack {
+                if enginePreset == value {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.white.opacity(0.2))
+                        .matchedGeometryEffect(id: "engineTabSelection", in: engineTabAnimation)
+                }
+
+                Text(title)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundColor(enginePreset == value ? .white : .white.opacity(0.68))
+            }
+            .frame(height: 20)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .accessibilityValue(enginePreset == value ? "Selected" : "")
     }
 
     private var idleDropView: some View {
@@ -134,32 +162,30 @@ struct DropZoneView: View {
                 formatDropZones
             }
         }
-        .opacity(processor.isProcessing ? 0 : (isDropHovering ? 1 : 0.001))
+        .opacity(processor.isProcessing ? 0 : (isDropTargeted ? 1 : 0.001))
         .allowsHitTesting(!processor.isProcessing)
-        .animation(.easeOut(duration: 0.14), value: isDropHovering)
+        .animation(.easeOut(duration: 0.14), value: isDropTargeted)
     }
 
     private var pdfDropZone: some View {
         ZStack {
-            Rectangle().fill(isTargetedPDF ? Color.white.opacity(0.1) : Color.clear)
+            Rectangle().fill(isDropTargeted ? Color.white.opacity(0.1) : Color.clear)
             Text("PDF")
                 .font(.system(size: 14, weight: .bold, design: .rounded))
                 .tracking(1)
                 .foregroundColor(.white.opacity(0.8))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
-        .onDrop(of: [.fileURL], delegate: MediaDropDelegate(
-            isTargeted: $isTargetedPDF,
-            processor: processor,
-            strategy: .highQuality
-        ))
     }
 
     private var formatDropZones: some View {
         HStack(spacing: 0) {
             ZStack {
-                Rectangle().fill(isTargetedPNG ? Color.white.opacity(0.1) : Color.clear)
+                Rectangle().fill(
+                    isDropTargeted && activeDropStrategy == .highQuality
+                        ? Color.white.opacity(0.1)
+                        : Color.clear
+                )
                 Text(highQualityDropLabel)
                     .font(.system(size: 14, weight: .bold, design: .rounded))
                     .tracking(1)
@@ -169,17 +195,15 @@ struct DropZoneView: View {
                     .padding(.horizontal, 8)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onDrop(of: [.fileURL], delegate: MediaDropDelegate(
-                isTargeted: $isTargetedPNG,
-                processor: processor,
-                strategy: .highQuality
-            ))
             
             Rectangle().fill(Color.white.opacity(0.15)).frame(width: 1).padding(.vertical, 24)
             
             ZStack {
-                Rectangle().fill(isTargetedWebP ? Color.white.opacity(0.1) : Color.clear)
+                Rectangle().fill(
+                    isDropTargeted && activeDropStrategy == .webOptimized
+                        ? Color.white.opacity(0.1)
+                        : Color.clear
+                )
                 Text(webDropLabel)
                     .font(.system(size: 14, weight: .bold, design: .rounded))
                     .tracking(1)
@@ -189,18 +213,11 @@ struct DropZoneView: View {
                     .padding(.horizontal, 8)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onDrop(of: [.fileURL], delegate: MediaDropDelegate(
-                isTargeted: $isTargetedWebP,
-                processor: processor,
-                strategy: .webOptimized
-            ))
         }
     }
 
     private var highQualityDropLabel: String {
         switch processor.detectedMediaType {
-        case .pdf: return "PDF"
         case .video: return "MP4"
         case .mixed: return "PNG / MP4 / PDF"
         default: return "PNG"
@@ -209,7 +226,6 @@ struct DropZoneView: View {
 
     private var webDropLabel: String {
         switch processor.detectedMediaType {
-        case .pdf: return "PDF"
         case .video: return "WEBM"
         case .mixed: return "WEBP / WEBM / PDF"
         default: return "WEBP"
@@ -233,7 +249,9 @@ struct DropZoneView: View {
         let elapsedTime = timeline.date.timeIntervalSince(processor.processingStartTime)
         let isComplete = !processor.isBatchRunning
         let hasFailures = processor.failureCount > 0
-        let shaderState: Float = hasFailures ? 2.0 : (isComplete ? 1.0 : 0.0)
+        let wasCancelled = processor.cancelledCount > 0
+        let didSucceed = isComplete && !hasFailures && !wasCancelled
+        let shaderState: Float = (hasFailures || wasCancelled) ? 2.0 : (didSucceed ? 1.0 : 0.0)
 
         return ZStack {
             Rectangle()
@@ -314,39 +332,27 @@ struct DropZoneView: View {
         let color: Color = hasFailures ? .orange : (wasCancelled ? .gray : Color(red: 0.2, green: 0.8, blue: 0.4))
         let icon = hasFailures ? "exclamationmark.triangle.fill" : (wasCancelled ? "stop.circle.fill" : "checkmark.circle.fill")
 
-        return HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 30))
-                .foregroundColor(color)
-                .shadow(color: color.opacity(0.35), radius: 6)
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 22))
+                    .foregroundColor(color)
+                    .shadow(color: color.opacity(0.35), radius: 6)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(summaryTitle)
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                HStack(spacing: 6) {
-                    Text(summarySubtitle)
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundColor(.white.opacity(0.66))
-                    if let savings = processor.savingsPercentage, savings > 0 {
-                        Text("−\(savings)%")
-                            .font(.system(size: 9, weight: .bold, design: .rounded))
-                            .foregroundColor(Color(red: 0.2, green: 0.8, blue: 0.4))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(summaryTitle)
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                    if let savings = processor.savingsPercentage, processor.successCount > 0 {
+                        Text("Saved \(savings)%")
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .foregroundColor(.white.opacity(0.66))
                     }
                 }
-                if let failure = processor.firstFailure {
-                    Text(failure.message)
-                        .font(.system(size: 9, weight: .medium, design: .rounded))
-                        .foregroundColor(.orange.opacity(0.9))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help("\(failure.message) \(failure.suggestion)")
-                }
-            }
 
-            Spacer()
+                Spacer(minLength: 4)
 
-            HStack(spacing: 6) {
                 if processor.retryableFailureCount > 0 {
                     Button("Retry") {
                         processor.retryFailedJobs()
@@ -364,22 +370,34 @@ struct DropZoneView: View {
                 .controlSize(.small)
                 .tint(color)
             }
+
+            if let failure = processor.firstFailure {
+                Text(failure.message)
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(failure.suggestion)
+                    .font(.system(size: 8, weight: .medium, design: .rounded))
+                    .foregroundColor(.orange.opacity(0.9))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help("\(failure.title): \(failure.message) \(failure.suggestion)")
+            }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
     }
 
     private var summaryTitle: String {
-        if processor.failureCount > 0 { return "Completed with issues" }
-        if processor.cancelledCount > 0 { return "Conversion cancelled" }
-        return processor.successCount == 1 ? "1 file optimized" : "\(processor.successCount) files optimized"
-    }
-
-    private var summarySubtitle: String {
         var parts: [String] = []
-        if processor.successCount > 0 { parts.append("\(processor.successCount) succeeded") }
-        if processor.failureCount > 0 { parts.append("\(processor.failureCount) failed") }
-        if processor.cancelledCount > 0 { parts.append("\(processor.cancelledCount) cancelled") }
+        if processor.successCount == 1 { parts.append("1 file optimized") }
+        if processor.successCount > 1 { parts.append("\(processor.successCount) files optimized") }
+        if processor.failureCount == 1 { parts.append("1 failed") }
+        if processor.failureCount > 1 { parts.append("\(processor.failureCount) failed") }
+        if processor.cancelledCount == 1 { parts.append("1 cancelled") }
+        if processor.cancelledCount > 1 { parts.append("\(processor.cancelledCount) cancelled") }
         return parts.joined(separator: " • ")
     }
 
@@ -433,8 +451,9 @@ struct DropZoneView: View {
 
 private struct MediaDropDelegate: DropDelegate {
     @Binding var isTargeted: Bool
+    @Binding var activeStrategy: ProcessingStrategy
     let processor: ImageProcessor
-    let strategy: ProcessingStrategy
+    let midpoint: CGFloat
 
     func validateDrop(info: DropInfo) -> Bool {
         !processor.isProcessing && info.hasItemsConforming(to: [.fileURL])
@@ -442,11 +461,13 @@ private struct MediaDropDelegate: DropDelegate {
 
     func dropEntered(info: DropInfo) {
         isTargeted = true
+        activeStrategy = strategy(at: info.location)
         processor.previewMediaType(from: info.itemProviders(for: [.fileURL]))
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .copy)
+        activeStrategy = strategy(at: info.location)
+        return DropProposal(operation: .copy)
     }
 
     func dropExited(info: DropInfo) {
@@ -459,8 +480,12 @@ private struct MediaDropDelegate: DropDelegate {
         isTargeted = false
         processor.processDroppedProviders(
             info.itemProviders(for: [.fileURL]),
-            strategy: strategy
+            strategy: strategy(at: info.location)
         )
         return true
+    }
+
+    private func strategy(at location: CGPoint) -> ProcessingStrategy {
+        location.x < midpoint ? .highQuality : .webOptimized
     }
 }

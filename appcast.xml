@@ -4,12 +4,12 @@
         <title>Burrito</title>
         <item>
             <title>2.0</title>
-            <pubDate>Thu, 06 Aug 2026 19:25:41 +0530</pubDate>
-            <sparkle:version>2</sparkle:version>
+            <pubDate>Fri, 07 Aug 2026 14:45:46 +0530</pubDate>
+            <sparkle:version>3</sparkle:version>
             <sparkle:shortVersionString>2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/arj00n/burrito/releases/download/v2.0/Burrito-2.0.zip" length="32326911" type="application/octet-stream" sparkle:edSignature="mLEL4BnyMUlxBfMW3RjA0gqmrIyPO7gsT6GPT+Izpi2A5h9GFSo6c+Ci83kBxNqW+SOK/x2EhJVpltYFPVRNCA=="/>
+            <enclosure url="https://github.com/arj00n/burrito/releases/download/v2.0/Burrito-2.0.zip" length="32328873" type="application/octet-stream" sparkle:edSignature="JatRlaxtJwPchWn32/e/60DCZUxY4EuukJG9bRbfMdXb05KK8RZECLa3UFmc1tZfSgBuVt9rMsLViKJDENU5Dw=="/>
         </item>
     </channel>
 </rss>
