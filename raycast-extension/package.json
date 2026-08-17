@@ -1,0 +1,53 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "burrito",
+  "title": "Burrito",
+  "description": "Convert selected Finder files with Burrito and copy the results.",
+  "icon": "icon.png",
+  "author": "arj00n",
+  "license": "MIT",
+  "platforms": ["macOS"],
+  "categories": ["Productivity", "Utilities"],
+  "commands": [
+    {
+      "name": "png",
+      "title": "Convert Selected Files to PNG",
+      "description": "Optimize selected Finder images as PNG and copy the results.",
+      "mode": "no-view"
+    },
+    {
+      "name": "webp",
+      "title": "Convert Selected Files to WebP",
+      "description": "Convert selected Finder images to WebP and copy the results.",
+      "mode": "no-view"
+    },
+    {
+      "name": "pdf",
+      "title": "Compress Selected PDFs",
+      "description": "Compress selected Finder PDFs and copy the results.",
+      "mode": "no-view"
+    },
+    {
+      "name": "webm",
+      "title": "Convert Selected Files to WebM",
+      "description": "Convert selected Finder videos to WebM and copy the results.",
+      "mode": "no-view"
+    },
+    {
+      "name": "mp4",
+      "title": "Convert Selected Files to MP4",
+      "description": "Convert selected Finder videos to MP4 and copy the results.",
+      "mode": "no-view"
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.104.24"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop"
+  }
+}

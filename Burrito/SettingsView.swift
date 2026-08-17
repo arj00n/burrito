@@ -91,7 +91,7 @@ struct SettingsView: View {
             
             Spacer(minLength: 0)
         }
-        .frame(width: 340, height: 180)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
         .preferredColorScheme(.dark)
     }

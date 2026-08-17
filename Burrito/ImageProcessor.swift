@@ -6,7 +6,7 @@ import PDFKit
 import AppKit
 import ImageIO
 
-enum TargetFormat: Equatable {
+enum TargetFormat: String, Equatable {
     case png
     case webp
     case mp4
@@ -14,13 +14,7 @@ enum TargetFormat: Equatable {
     case pdf
 
     var fileExtension: String {
-        switch self {
-        case .png: return "png"
-        case .webp: return "webp"
-        case .mp4: return "mp4"
-        case .webm: return "webm"
-        case .pdf: return "pdf"
-        }
+        rawValue
     }
 }
 
@@ -29,7 +23,7 @@ enum ProcessingStrategy: Equatable {
     case webOptimized
 }
 
-enum MediaType {
+enum MediaType: Equatable {
     case image
     case video
     case pdf
@@ -62,6 +56,7 @@ struct ConversionJob {
     let sourceURL: URL
     let targetFormat: TargetFormat?
     var state: ConversionJobState
+    var outputURL: URL?
 
     var displayName: String { sourceURL.lastPathComponent }
 }
@@ -69,6 +64,7 @@ struct ConversionJob {
 private struct ConversionOutput {
     let originalSize: Int64
     let optimizedSize: Int64
+    let outputURL: URL
 }
 
 private struct CommandResult {
@@ -80,19 +76,17 @@ final class ImageProcessor: ObservableObject {
     @Published var isProcessing = false
     @Published var isBatchRunning = false
     @Published var savingsPercentage: Int?
-    @Published var processingStartTime = Date()
     @Published var detectedMediaType: MediaType = .unknown
     @Published var jobs: [ConversionJob] = []
-    @Published var meshMotionRate = 0.55
+    @Published private(set) var resultsCopied = false
 
     private let processLock = NSLock()
     private let outputLock = NSLock()
     private var activeProcesses: [ObjectIdentifier: Process] = [:]
     private var cancelRequested = false
     private var autoDismissWorkItem: DispatchWorkItem?
-    private var lastProgressDate = Date()
-    private var smoothedItemsPerSecond = 0.0
     private var mediaPreviewToken = UUID()
+    private var copyResultsOnSuccess = false
 
     var totalCount: Int { jobs.count }
     var completedCount: Int { jobs.filter { $0.state.isTerminal }.count }
@@ -102,6 +96,7 @@ final class ImageProcessor: ObservableObject {
             return false
         }.count
     }
+    var allSucceeded: Bool { totalCount > 0 && successCount == totalCount }
     var failureCount: Int {
         jobs.filter {
             if case .failed = $0.state { return true }
@@ -125,18 +120,27 @@ final class ImageProcessor: ObservableObject {
         guard totalCount > 0 else { return 0 }
         return Double(completedCount) / Double(totalCount)
     }
-    var currentFileName: String? {
+    var currentJob: ConversionJob? {
         jobs.first {
             if case .processing = $0.state { return true }
             return false
-        }?.displayName
+        }
     }
+    var currentFileName: String? { currentJob?.displayName }
+    var outputURLs: [URL] { jobs.compactMap(\.outputURL) }
     var firstFailure: ConversionFailure? {
         jobs.compactMap {
             if case let .failed(failure) = $0.state { return failure }
             return nil
         }.first
     }
+
+    func previewMediaType(from urls: [URL]) {
+        mediaPreviewToken = UUID()
+        guard !isProcessing, !urls.isEmpty else { return }
+        detectedMediaType = mediaType(for: urls)
+    }
+
     func previewMediaType(from providers: [NSItemProvider]) {
         let token = UUID()
         mediaPreviewToken = token
@@ -169,22 +173,28 @@ final class ImageProcessor: ObservableObject {
         }
     }
 
-    func processDroppedURLs(_ droppedURLs: [URL], strategy: ProcessingStrategy) {
+    func processDroppedURLs(
+        _ droppedURLs: [URL],
+        strategy: ProcessingStrategy,
+        forcedTargetFormat: TargetFormat? = nil,
+        copyResultsOnSuccess: Bool = false
+    ) {
+        guard !isBatchRunning else { return }
         autoDismissWorkItem?.cancel()
         let sourceURLs = expandedSourceURLs(from: droppedURLs)
-        let preparedJobs = sourceURLs.map { prepareJob(for: $0, strategy: strategy) }
+        let preparedJobs = sourceURLs.map {
+            prepareJob(for: $0, strategy: strategy, forcedTargetFormat: forcedTargetFormat)
+        }
         guard !preparedJobs.isEmpty else { return }
 
         setCancellationRequested(false)
-        lastProgressDate = Date()
-        smoothedItemsPerSecond = 0
+        self.copyResultsOnSuccess = copyResultsOnSuccess
+        resultsCopied = false
 
         withAnimation(.easeInOut(duration: 0.22)) {
             isProcessing = true
             isBatchRunning = true
             savingsPercentage = nil
-            processingStartTime = Date()
-            meshMotionRate = 0.55
             detectedMediaType = mediaType(for: sourceURLs)
             jobs = preparedJobs
         }
@@ -196,8 +206,6 @@ final class ImageProcessor: ObservableObject {
         guard !isBatchRunning, retryableFailureCount > 0 else { return }
         autoDismissWorkItem?.cancel()
         setCancellationRequested(false)
-        lastProgressDate = Date()
-        smoothedItemsPerSecond = 0
 
         for index in jobs.indices where jobs[index].targetFormat != nil {
             if case .failed = jobs[index].state {
@@ -208,8 +216,6 @@ final class ImageProcessor: ObservableObject {
         withAnimation(.easeInOut(duration: 0.18)) {
             isBatchRunning = true
             savingsPercentage = nil
-            processingStartTime = Date()
-            meshMotionRate = 0.55
         }
 
         runQueuedJobs()
@@ -256,11 +262,11 @@ final class ImageProcessor: ObservableObject {
                             totalOriginal += output.originalSize
                             totalOptimized += output.optimizedSize
                             self.jobs[index].state = .succeeded
+                            self.jobs[index].outputURL = output.outputURL
                         case let .failure(failure):
                             self.jobs[index].state = .failed(failure)
                         }
                     }
-                    self.recordProgressAdvance()
                 }
             }
         }
@@ -274,9 +280,11 @@ final class ImageProcessor: ObservableObject {
 
             withAnimation(.easeOut(duration: 0.2)) {
                 self.isBatchRunning = false
-                self.meshMotionRate = 0.24
             }
-            if self.failureCount == 0 {
+            if self.allSucceeded {
+                if self.copyResultsOnSuccess {
+                    self.copyConvertedFilesToClipboard()
+                }
                 self.scheduleAutoDismiss()
             }
         }
@@ -299,13 +307,30 @@ final class ImageProcessor: ObservableObject {
     func dismissBatchResults() {
         guard !isBatchRunning else { return }
         autoDismissWorkItem?.cancel()
+        isProcessing = false
         savingsPercentage = nil
         jobs = []
         detectedMediaType = .unknown
-        meshMotionRate = 0.55
-        withAnimation(.easeInOut(duration: 0.18)) {
-            isProcessing = false
-        }
+        copyResultsOnSuccess = false
+        resultsCopied = false
+    }
+
+    @discardableResult
+    func copyConvertedFilesToClipboard() -> Bool {
+        guard !isBatchRunning, allSucceeded else { return false }
+        autoDismissWorkItem?.cancel()
+        let urls = jobs.compactMap(\.outputURL)
+        guard urls.count == totalCount else { return false }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let copied = pasteboard.writeObjects(urls as [NSURL])
+        resultsCopied = copied
+        return copied
+    }
+
+    func holdBatchResults() {
+        autoDismissWorkItem?.cancel()
     }
 
     private func scheduleAutoDismiss() {
@@ -315,17 +340,6 @@ final class ImageProcessor: ObservableObject {
         }
         autoDismissWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: workItem)
-    }
-
-    private func recordProgressAdvance() {
-        let now = Date()
-        let interval = max(now.timeIntervalSince(lastProgressDate), 0.05)
-        let currentRate = 1 / interval
-        smoothedItemsPerSecond = smoothedItemsPerSecond == 0
-            ? currentRate
-            : (smoothedItemsPerSecond * 0.72) + (currentRate * 0.28)
-        meshMotionRate = min(max(0.46 + smoothedItemsPerSecond * 0.18, 0.46), 1.65)
-        lastProgressDate = now
     }
 
     private var isCancellationRequested: Bool {
@@ -428,7 +442,11 @@ final class ImageProcessor: ObservableObject {
         return .unknown
     }
 
-    private func prepareJob(for url: URL, strategy: ProcessingStrategy) -> ConversionJob {
+    private func prepareJob(
+        for url: URL,
+        strategy: ProcessingStrategy,
+        forcedTargetFormat: TargetFormat?
+    ) -> ConversionJob {
         guard FileManager.default.isReadableFile(atPath: url.path) else {
             return ConversionJob(
                 sourceURL: url,
@@ -437,7 +455,8 @@ final class ImageProcessor: ObservableObject {
                     title: "File can’t be read",
                     message: "Burrito does not have permission to read \(url.lastPathComponent).",
                     suggestion: "Move the file to a writable folder or grant Burrito file access, then try again."
-                ))
+                )),
+                outputURL: nil
             )
         }
 
@@ -451,14 +470,35 @@ final class ImageProcessor: ObservableObject {
                     title: "Unsupported file",
                     message: "\(url.lastPathComponent) is not a recognized image, video, or PDF.",
                     suggestion: "Drop an image, video, or PDF file instead."
-                ))
+                )),
+                outputURL: nil
             )
         }
 
+        let isImage = type.conforms(to: .image)
         let isVideo = type.conforms(to: .movie) || type.conforms(to: .video)
         let isPDF = type.conforms(to: .pdf)
         let targetFormat: TargetFormat
-        if isPDF {
+        if let forcedTargetFormat {
+            let isCompatible = switch forcedTargetFormat {
+            case .png, .webp: isImage
+            case .mp4, .webm: isVideo
+            case .pdf: isPDF
+            }
+            guard isCompatible else {
+                return ConversionJob(
+                    sourceURL: url,
+                    targetFormat: nil,
+                    state: .failed(ConversionFailure(
+                        title: "File doesn’t match \(forcedTargetFormat.rawValue.uppercased())",
+                        message: "\(url.lastPathComponent) cannot be processed as \(forcedTargetFormat.rawValue.uppercased()).",
+                        suggestion: "Use PNG or WebP for images, MP4 or WebM for videos, and PDF for PDFs."
+                    )),
+                    outputURL: nil
+                )
+            }
+            targetFormat = forcedTargetFormat
+        } else if isPDF {
             targetFormat = .pdf
         } else {
             switch strategy {
@@ -466,7 +506,7 @@ final class ImageProcessor: ObservableObject {
             case .webOptimized: targetFormat = isVideo ? .webm : .webp
             }
         }
-        return ConversionJob(sourceURL: url, targetFormat: targetFormat, state: .queued)
+        return ConversionJob(sourceURL: url, targetFormat: targetFormat, state: .queued, outputURL: nil)
     }
 
     private func executeShellPipeline(
@@ -729,7 +769,8 @@ final class ImageProcessor: ObservableObject {
             shouldRemoveOutputReservation = false
             return .success(ConversionOutput(
                 originalSize: originalSize,
-                optimizedSize: optimizedSize
+                optimizedSize: optimizedSize,
+                outputURL: finalURL
             ))
         } catch let failure as ConversionFailure {
             return .failure(failure)

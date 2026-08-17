@@ -29,6 +29,16 @@ Then drag **Burrito.app** into your Applications folder.
 
 > Requires **macOS 15.6** or later.
 
+## Raycast
+
+The included Raycast extension adds `PNG`, `WebP`, `PDF`, `WebM`, and `MP4` commands. Select files in Finder, run a command, and Burrito copies the converted files to the clipboard when the batch succeeds.
+
+```bash
+cd raycast-extension
+npm install
+npm run dev
+```
+
 
 ## Contributing
 
