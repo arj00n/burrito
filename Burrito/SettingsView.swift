@@ -7,29 +7,32 @@ struct SettingsView: View {
     @AppStorage("pdfTargetBytes") private var pdfTargetBytes = 0
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Header with Back Button
-            HStack {
+        VStack(spacing: 8) {
+            // Mirrors the shelf header exactly - same height, same inset, same type sizes -
+            // so switching into settings does not nudge the title line. The dark bar that
+            // used to sit behind this row is gone: it read as a title bar bolted onto the
+            // notch rather than as part of it.
+            HStack(spacing: 6) {
                 Button(action: { showSettings = false }) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(size: 10, weight: .bold))
                         Text("Back")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
                     }
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundColor(.white.opacity(0.72))
                 }
                 .buttonStyle(.plain)
-                
+
                 Spacer()
+
                 Text("Settings")
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
                     .foregroundColor(.white)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Color.black.opacity(0.22))
-            
+            .frame(height: NotchShelfView.headerHeight)
+            .padding(.horizontal, NotchShelfView.contentInset)
+
             VStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Text("Save To")
@@ -86,12 +89,11 @@ struct SettingsView: View {
                 }
 
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-            
+            .padding(.horizontal, NotchShelfView.contentInset)
+
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.clear)
         .preferredColorScheme(.dark)
     }

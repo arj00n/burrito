@@ -10,9 +10,54 @@ final class NotchInteractionModel: ObservableObject {
     @Published var selectedFiles: [URL] = []
     @Published var isPinned = false
     @Published var isDraggingResults = false
+
+    /// How long the notch stays open waiting for a target format to be picked.
+    ///
+    /// `isChoosingFormat` feeds `staysExpandedOnHoverExit`, so it holds the notch open
+    /// for as long as it is set. Without a deadline, selecting files and then walking
+    /// away left the notch expanded indefinitely - the ✕ button was the only way out.
+    private static let formatChoiceTimeout: TimeInterval = 45
+
+    private var formatChoiceExpiry: DispatchWorkItem?
+
+    /// Enter (or re-arm) format choice. Call again after the file selection lands so the
+    /// deadline is measured from the point the user actually has something to choose.
+    func beginChoosingFormat() {
+        isChoosingFormat = true
+
+        formatChoiceExpiry?.cancel()
+        let expiry = DispatchWorkItem { [weak self] in
+            guard let self, self.isChoosingFormat else { return }
+            self.endChoosingFormat()
+        }
+        formatChoiceExpiry = expiry
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.formatChoiceTimeout,
+            execute: expiry
+        )
+    }
+
+    /// Leave format choice and release the notch. Idempotent.
+    func endChoosingFormat() {
+        formatChoiceExpiry?.cancel()
+        formatChoiceExpiry = nil
+        selectedFiles = []
+        isChoosingFormat = false
+    }
 }
 
 struct NotchShelfView: View {
+    static let contentSize = CGSize(width: 460, height: 204)
+
+    /// Height of the top header row, shared with ``SettingsView`` so the title and the
+    /// controls sit on exactly the same line in both states. Pinned rather than left to
+    /// intrinsic sizing, because the two headers hold different controls and would
+    /// otherwise settle at slightly different heights and shift on every transition.
+    static let headerHeight: CGFloat = 16
+
+    /// Horizontal inset of the shelf's content, shared with ``SettingsView``.
+    static let contentInset: CGFloat = 16
+
     @ObservedObject var processor: ImageProcessor
     @ObservedObject var interaction: NotchInteractionModel
     let requestExpansion: () -> Void
@@ -30,7 +75,7 @@ struct NotchShelfView: View {
             }
         }
         .padding(.top, 32)
-        .frame(width: 460, height: 204, alignment: .top)
+        .frame(width: Self.contentSize.width, height: Self.contentSize.height, alignment: .top)
         .background {
             LinearGradient(
                 colors: [
@@ -55,13 +100,11 @@ struct NotchShelfView: View {
         .animation(.easeOut(duration: 0.14), value: showSettings)
         .onReceive(NotificationCenter.default.publisher(for: .showBurritoDropZone)) { _ in
             showSettings = false
-            interaction.selectedFiles = []
-            interaction.isChoosingFormat = false
+            interaction.endChoosingFormat()
         }
         .onChange(of: processor.isProcessing) { _, processing in
             if processing {
-                interaction.selectedFiles = []
-                interaction.isChoosingFormat = false
+                interaction.endChoosingFormat()
             }
         }
     }
@@ -91,6 +134,7 @@ struct NotchShelfView: View {
                 }
                 .buttonStyle(.plain)
             }
+            .frame(height: Self.headerHeight)
 
             if processor.isBatchRunning {
                 processingContent
@@ -156,17 +200,42 @@ struct NotchShelfView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            interaction.isDropTargeted ? Color.green.opacity(0.11) : Color.white.opacity(0.035),
-            in: RoundedRectangle(cornerRadius: 12)
-        )
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(
+                        interaction.isDropTargeted
+                            ? engineTint.opacity(0.12)
+                            : Color.white.opacity(0.035)
+                    )
+                DropZoneTunnel(
+                    tint: engineTint,
+                    intensity: interaction.isDropTargeted ? .dropTargeted : .idle
+                )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(
-                    interaction.isDropTargeted ? Color.green.opacity(0.5) : Color.white.opacity(0.18),
+                    interaction.isDropTargeted ? engineTint.opacity(0.55) : Color.white.opacity(0.18),
                     style: StrokeStyle(lineWidth: 2, dash: interaction.isDropTargeted ? [] : [6, 6])
                 )
+        }
+        .animation(.easeInOut(duration: 0.35), value: enginePreset)
+    }
+
+    /// Colour the drop zone carries for the active engine preset. Warm for speed, the
+    /// app's own green for the balanced default, cool for maximum compression.
+    private var engineTint: Color {
+        switch enginePreset {
+        case "fast":
+            Color(red: 1.0, green: 0.65, blue: 0.24)
+        case "smallest":
+            Color(red: 0.63, green: 0.47, blue: 1.0)
+        default:
+            Color(red: 0.29, green: 0.86, blue: 0.53)
         }
     }
 
@@ -178,8 +247,7 @@ struct NotchShelfView: View {
                     .foregroundStyle(.white.opacity(0.72))
                 Spacer()
                 Button {
-                    interaction.selectedFiles = []
-                    interaction.isChoosingFormat = false
+                    interaction.endChoosingFormat()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
@@ -202,15 +270,14 @@ struct NotchShelfView: View {
     private func formatChoice(_ title: String, strategy: ProcessingStrategy) -> some View {
         Button {
             let files = interaction.selectedFiles
-            interaction.selectedFiles = []
+            interaction.endChoosingFormat()
             processor.processDroppedURLs(files, strategy: strategy)
-            interaction.isChoosingFormat = false
         } label: {
             Text(title)
                 .font(.system(size: 11, weight: .bold, design: .rounded))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.green.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.green.opacity(0.42), lineWidth: 1))
+                .background(engineTint.opacity(0.16), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(engineTint.opacity(0.42), lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -222,16 +289,19 @@ struct NotchShelfView: View {
         panel.allowedContentTypes = [.image, .movie, .video, .pdf]
         panel.prompt = "Select"
 
-        interaction.isChoosingFormat = true
+        interaction.beginChoosingFormat()
         requestExpansion()
         NSApp.activate(ignoringOtherApps: true)
         panel.begin { response in
             guard response == .OK, !panel.urls.isEmpty else {
-                interaction.isChoosingFormat = false
+                interaction.endChoosingFormat()
                 return
             }
             processor.previewMediaType(from: panel.urls)
             interaction.selectedFiles = panel.urls
+            // Re-arm the deadline now that there is actually something to choose - the
+            // user may have sat in the open panel for a while.
+            interaction.beginChoosingFormat()
             DispatchQueue.main.async { requestExpansion() }
         }
     }
@@ -240,40 +310,64 @@ struct NotchShelfView: View {
         Text(title)
             .font(.system(size: 11, weight: .bold, design: .rounded))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(selected ? Color.green.opacity(0.18) : .clear)
+            .background(selected ? engineTint.opacity(0.2) : .clear)
     }
 
+    /// Converting. Centred column over a warp-speed field, so the wait reads as travel
+    /// rather than as a stalled row of controls.
     private var processingContent: some View {
-        HStack(spacing: 14) {
+        VStack(spacing: 9) {
             if let job = processor.currentJob {
                 BurritoThumbnail(url: job.sourceURL)
-                    .frame(width: 42, height: 42)
+                    .frame(width: 40, height: 40)
             }
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(processor.currentFileName ?? "Finishing…")
-                        .lineLimit(1)
-                    Spacer()
-                    Text("\(Int(processor.batchProgress * 100))%")
-                        .monospacedDigit()
-                }
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+            Text(processor.currentFileName ?? "Finishing…")
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 250)
 
+            HStack(spacing: 8) {
                 ProgressView(value: processor.batchProgress)
                     .progressViewStyle(.linear)
-                    .tint(.green)
+                    .tint(engineTint)
+                    .frame(width: 164)
+                Text("\(Int(processor.batchProgress * 100))%")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .frame(width: 30, alignment: .leading)
             }
 
             Button("Cancel") { processor.cancelProcessing() }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(.plain)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(.white.opacity(0.16), in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.18), lineWidth: 0.75))
         }
-        .frame(maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            // Same tunnel as the drop zone, run at warp, with the particle field riding
+            // its walls - so converting reads as travelling down the zone you dropped
+            // into rather than as a different screen.
+            let intensity = TunnelIntensity.converting(progress: processor.batchProgress)
+            ZStack {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.black.opacity(0.3))
+                DropZoneTunnel(tint: engineTint, intensity: intensity)
+                WarpField(tint: engineTint, intensity: intensity)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
     }
 
+    /// Finished. Centred like the conversion screen, over the same tunnel - coasting to a
+    /// slow drift on success, frozen on failure - so the outcome is legible from the motion
+    /// before a word of the text is read.
     private var resultContent: some View {
-        HStack(spacing: 12) {
+        VStack(spacing: 9) {
             if processor.allSucceeded {
                 ConvertedFilesStack(
                     urls: processor.outputURLs,
@@ -285,46 +379,63 @@ struct NotchShelfView: View {
                 )
             } else {
                 Image(systemName: resultIcon)
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(resultColor)
+                    .font(.system(size: 27, weight: .semibold))
+                    .foregroundStyle(resultTint)
+                    .frame(height: 52)
             }
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 4) {
-                    if processor.allSucceeded {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    }
-                    Text(resultTitle)
-                }
+            Text(resultTitle)
                 .font(.system(size: 12, weight: .bold, design: .rounded))
-                Text(resultSubtitle)
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.64))
-            }
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .help(resultDetail ?? "")
 
-            Spacer()
-
-            if processor.allSucceeded {
-                resultButton(processor.resultsCopied ? "Copied" : "Copy") {
-                    _ = processor.copyConvertedFilesToClipboard()
+            HStack(spacing: 7) {
+                if processor.allSucceeded {
+                    resultButton(processor.resultsCopied ? "Copied" : "Copy", tint: resultTint) {
+                        _ = processor.copyConvertedFilesToClipboard()
+                    }
+                } else if processor.retryableFailureCount > 0 {
+                    resultButton("Retry", tint: resultTint) { processor.retryFailedJobs() }
                 }
-            } else if processor.retryableFailureCount > 0 {
-                resultButton("Retry") { processor.retryFailedJobs() }
-            }
 
-            resultButton("Done") { processor.dismissBatchResults() }
+                resultButton("Done", tint: nil) { processor.dismissBatchResults() }
+            }
         }
-        .frame(maxHeight: .infinity)
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.black.opacity(0.28))
+                DropZoneTunnel(
+                    tint: resultTint,
+                    intensity: processor.allSucceeded ? .settled : .stalled
+                )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
     }
 
-    private func resultButton(_ title: String, action: @escaping () -> Void) -> some View {
+    /// Pass a `tint` for the run's primary action; `nil` keeps the button neutral, so only
+    /// one control in the row ever competes for attention.
+    private func resultButton(
+        _ title: String,
+        tint: Color?,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(title, action: action)
             .buttonStyle(.plain)
+            .font(.system(size: 10, weight: .bold, design: .rounded))
             .padding(.horizontal, 13)
-            .padding(.vertical, 6)
-            .background(.white.opacity(0.18), in: Capsule())
-            .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.75))
+            .padding(.vertical, 5)
+            .background((tint ?? .white).opacity(tint == nil ? 0.15 : 0.24), in: Capsule())
+            .overlay(
+                Capsule().stroke(
+                    (tint ?? .white).opacity(tint == nil ? 0.18 : 0.46),
+                    lineWidth: 0.75
+                )
+            )
     }
 
     private var resultIcon: String {
@@ -333,28 +444,53 @@ struct NotchShelfView: View {
         return "exclamationmark.triangle.fill"
     }
 
-    private var resultColor: Color {
-        processor.allSucceeded ? .green : processor.failureCount > 0 ? .orange : .secondary
+    /// Colour the whole result screen carries - tunnel, glyph and primary action.
+    ///
+    /// Success adopts the engine preset, so a finished run still says which setting
+    /// produced it. Failure and cancellation break away from the preset deliberately: those
+    /// are outcomes, not settings, and tinting them amber or violet would read as a preset
+    /// change rather than as something having gone wrong.
+    private var resultTint: Color {
+        if processor.allSucceeded { return engineTint }
+        if processor.failureCount > 0 { return Color(red: 1.0, green: 0.56, blue: 0.27) }
+        return Color(red: 0.64, green: 0.68, blue: 0.74)
     }
 
+    /// The whole result on one line: the outcome, then the savings whenever there is a
+    /// number worth reporting.
+    ///
+    /// `savingsPercentage` is computed for any batch that processed at least one byte, not
+    /// only for a clean run, so a partial success still gets to report what it did save.
     private var resultTitle: String {
+        let outcome: String
         if processor.allSucceeded {
-            return processor.successCount == 1 ? "File optimized" : "\(processor.successCount) files optimized"
+            outcome = processor.successCount == 1
+                ? "File optimized"
+                : "\(processor.successCount) files optimized"
+        } else if processor.cancelledCount > 0, processor.failureCount == 0 {
+            outcome = "\(processor.successCount) done, \(processor.cancelledCount) cancelled"
+        } else {
+            outcome = "\(processor.failureCount) failed, \(processor.successCount) succeeded"
         }
-        if processor.cancelledCount > 0 {
-            return "\(processor.successCount) completed, \(processor.cancelledCount) cancelled"
-        }
-        return "\(processor.failureCount) failed, \(processor.successCount) succeeded"
+
+        // No savings clause when nothing succeeded, or when the run genuinely saved
+        // nothing - "saved 0%" is worse than silence.
+        guard let savings = processor.savingsPercentage,
+              savings > 0,
+              processor.successCount > 0 else { return outcome }
+
+        return "\(outcome) · saved \(savings)%"
     }
 
-    private var resultSubtitle: String {
-        if let savings = processor.savingsPercentage, processor.allSucceeded {
-            return "Saved \(savings)%"
-        }
-        if processor.cancelledCount > 0 && processor.failureCount == 0 {
+    /// Detail that used to sit on a second line. One line is the budget now, so the failure
+    /// reason becomes the row's tooltip rather than being dropped - a shell error is the
+    /// only way to find out why a conversion failed.
+    private var resultDetail: String? {
+        if processor.allSucceeded { return nil }
+        if processor.cancelledCount > 0, processor.failureCount == 0 {
             return "Finished files remain in your save folder."
         }
-        return processor.firstFailure?.message ?? "Conversion finished"
+        return processor.firstFailure?.message
     }
 
     private var primaryDropLabel: String {
