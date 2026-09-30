@@ -8,9 +8,62 @@ import NookSurface
 extension Notification.Name {
     static let checkForBurritoUpdates = Notification.Name("CheckForBurritoUpdates")
     static let showBurritoDropZone = Notification.Name("ShowBurritoDropZone")
+    static let showBurritoSettings = Notification.Name("ShowBurritoSettings")
 }
 
 private typealias BurritoNook = Nook<NotchShelfView, EmptyView, EmptyView>
+
+/// Which displays Burrito puts a shelf on.
+enum DisplayScope: String, CaseIterable {
+    case builtIn
+    case external
+    case both
+
+    static let storageKey = "notchDisplayScope"
+
+    /// Read from defaults, falling back to every display.
+    static var current: DisplayScope {
+        DisplayScope(rawValue: UserDefaults.standard.string(forKey: storageKey) ?? "") ?? .both
+    }
+
+    var title: String {
+        switch self {
+        case .builtIn: "Built-in Display"
+        case .external: "External Monitor"
+        case .both: "All Displays"
+        }
+    }
+
+    func includes(displayID: CGDirectDisplayID) -> Bool {
+        switch self {
+        case .both: true
+        case .builtIn: CGDisplayIsBuiltin(displayID) != 0
+        case .external: CGDisplayIsBuiltin(displayID) == 0
+        }
+    }
+
+    /// This option needs an external monitor to resolve to anything.
+    var requiresExternalDisplay: Bool { self == .external }
+
+    static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        return (screen.deviceDescription[key] as? NSNumber)?.uint32Value
+    }
+
+    /// `true` while any non-built-in display is attached.
+    static var hasExternalDisplay: Bool {
+        NSScreen.screens.contains { screen in
+            guard let id = displayID(of: screen) else { return false }
+            return CGDisplayIsBuiltin(id) == 0
+        }
+    }
+
+    /// `true` when the stored choice currently resolves to no display at all - e.g.
+    /// "External Monitor" with nothing plugged in.
+    static var currentSelectionIsInactive: Bool {
+        current.requiresExternalDisplay && !hasExternalDisplay
+    }
+}
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Desired chrome presentation for one display. Requests coalesce onto the newest
@@ -24,6 +77,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// public handle on the window, so it's how we recognize a panel resize that the
     /// package performed behind our back.
     private static let nookPanelIdentifier = "opennook.panel"
+
+    private static let loginMenuItemTag = 7_001
+
+    /// Backstop cadence for ``sweepOrphanPanels()``.
+    private static let orphanSweepInterval: TimeInterval = 3
 
     /// Slack around the expanded chrome inside which an incoming file drag pre-opens the
     /// notch, so the drop target is on screen before the pointer arrives. Applied to the
@@ -46,16 +104,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var earlyFileDragDetected = false
     private var earlyDragMonitors: [Any] = []
     private var dragPollTimer: Timer?
-    private let updaterController = SPUStandardUpdaterController(
+    private let updates = UpdateModel()
+
+    /// Lazy so it can hand `updates` to Sparkle as its delegate - a stored property's
+    /// initializer can't reference another one.
+    private lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: true,
-        updaterDelegate: nil,
+        updaterDelegate: updates,
         userDriverDelegate: nil
     )
+
+    private lazy var settingsWindow = SettingsWindowController(updates: updates)
 
     var statusItem: NSStatusItem!
     var rightClickMenu: NSMenu!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        updates.attach(updaterController)
         adoptBalancedEngineDefaultIfNeeded()
         setupNotches()
         setupPresentationObservers()
@@ -66,6 +131,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(checkForUpdates),
             name: .checkForBurritoUpdates,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(showSettings),
+            name: .showBurritoSettings,
             object: nil
         )
         NotificationCenter.default.addObserver(
@@ -90,10 +161,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupNotches() {
-        for screen in NSScreen.screens {
-            guard let displayID = displayID(for: screen) else { continue }
-            nooks[displayID] = makeNook(for: displayID)
+        syncNooks()
+    }
+
+    /// Displays that should currently carry a shelf: attached, and permitted by the
+    /// user's ``DisplayScope``.
+    private func eligibleDisplayIDs() -> Set<CGDirectDisplayID> {
+        let attached = Set(NSScreen.screens.compactMap(displayID(for:)))
+        let scoped = attached.filter { DisplayScope.current.includes(displayID: $0) }
+
+        // Never leave the app with nowhere to draw. "External Monitor" with nothing
+        // plugged in would otherwise hide the shelf completely - and since the settings
+        // live *inside* the shelf, that is a one-way trap with no way back. Fall back to
+        // every attached display; the moment a monitor appears, `syncNooks` moves the
+        // shelf there and honours the choice properly.
+        return scoped.isEmpty ? attached : scoped
+    }
+
+    /// Bring `nooks` in line with the eligible displays - the single reconciliation point
+    /// for launch, display changes, and the user changing the display setting.
+    ///
+    /// Only the difference is acted on. Rebuilding every nook on any change is what used
+    /// to hang the app: `hide()` defers indefinitely while the pointer is over the chrome
+    /// (`.keepVisible` polls until it leaves), so a display change with the pointer on the
+    /// notch stalled the rebuild and the notch never came back until relaunch.
+    private func syncNooks() {
+        let eligible = eligibleDisplayIDs()
+
+        for (displayID, nook) in nooks where !eligible.contains(displayID) {
+            retire(nook, on: displayID)
         }
+
+        for displayID in eligible where nooks[displayID] == nil {
+            nooks[displayID] = makeNook(for: displayID)
+            setIntent(.compact, on: displayID)
+        }
+
+        sweepOrphanPanels()
     }
 
     /// Build the nook for one display.
@@ -121,7 +225,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             EmptyView()
         }
 
-        nook.presentation = .auto
+        // `.notch` rather than `.auto`: `.auto` resolves to the floating pill on any
+        // display without a physical notch, which is why an external monitor showed a
+        // free-floating rounded panel. `.notch` hangs the eared shape off the bare menu
+        // bar instead, so every display reads as a notch.
+        nook.presentation = .notch
         nook.screenProvider = { [weak self] in self?.liveScreen(for: displayID) }
         nook.chromeAppearance = NSAppearance(named: .darkAqua)
         nook.backdrop = .vibrancy(.init(
@@ -192,8 +300,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] processing in self?.setProcessingPresentation(processing) }
             .store(in: &cancellables)
 
+        observeDisplayScope()
         observePanelResizes()
         setupEarlyDragMonitors()
+    }
+
+    /// Apply the display setting the moment it changes, without a relaunch.
+    private func observeDisplayScope() {
+        NotificationCenter.default
+            .publisher(for: UserDefaults.didChangeNotification)
+            .map { _ in DisplayScope.current }
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.syncNooks()
+                self.reassertAllChromeGeometry()
+            }
+            .store(in: &cancellables)
     }
 
     /// Catch panel resizes that NookSurface performed itself.
@@ -212,8 +335,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .publisher(for: NSWindow.didResizeNotification)
             .compactMap { $0.object as? NSWindow }
             .filter { $0.accessibilityIdentifier() == Self.nookPanelIdentifier }
-            .sink { [weak self] _ in self?.reassertAllChromeGeometry() }
+            .sink { [weak self] _ in
+                // The package creates every panel with a `setFrame`, so this fires the
+                // moment an orphan is born - sweep before re-asserting geometry.
+                self?.sweepOrphanPanels()
+                self?.reassertAllChromeGeometry()
+            }
             .store(in: &cancellables)
+
+        // A panel can also be re-shown without being resized - `showWindow()` orders a
+        // window front with no frame change - so catch visibility changes as well.
+        NotificationCenter.default
+            .publisher(for: NSWindow.didChangeOcclusionStateNotification)
+            .compactMap { $0.object as? NSWindow }
+            .filter { $0.accessibilityIdentifier() == Self.nookPanelIdentifier }
+            .sink { [weak self] _ in self?.sweepOrphanPanels() }
+            .store(in: &cancellables)
+
+        // Backstop for any path neither notification covers. Walking a handful of
+        // windows every few seconds costs nothing measurable.
+        Timer.publish(every: Self.orphanSweepInterval, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in self?.sweepOrphanPanels() }
+            .store(in: &cancellables)
+    }
+
+    /// Close every NookSurface panel that is not the live window of a tracked nook.
+    ///
+    /// `Nook` has no `deinit`, so a nook dropped while it holds an ordered-in window - or
+    /// while an in-flight transition is about to build one - leaks that window for good.
+    /// The package builds panels at the full screen width and half its height, so every
+    /// orphan is a transparent sheet over the top half of the display, above every other
+    /// app, fighting whatever is underneath for the cursor. That was the pointer flicker,
+    /// and each orphan also hosts a shelf that can expand - the duplicate Burritos.
+    ///
+    /// They leaked through a race around display changes and wakes (35 wakes produced 7
+    /// orphans in one 2.2 instance), so rather than chase every path that can drop a nook,
+    /// this enforces the invariant directly: exactly one panel per tracked nook.
+    private func sweepOrphanPanels() {
+        var live = Set<ObjectIdentifier>()
+        for nook in nooks.values {
+            nook.configureWindow { live.insert(ObjectIdentifier($0)) }
+        }
+
+        for window in NSApp.windows
+        where window.accessibilityIdentifier() == Self.nookPanelIdentifier
+            && !live.contains(ObjectIdentifier(window)) {
+            window.orderOut(nil)
+            window.close()
+        }
     }
 
     private func setupStatusItem() {
@@ -242,8 +412,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        loginItem.tag = Self.loginMenuItemTag
         rightClickMenu.addItem(loginItem)
         rightClickMenu.addItem(.separator())
+
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        rightClickMenu.addItem(settingsItem)
 
         let updateItem = NSMenuItem(
             title: "Check for Updates…",
@@ -261,6 +436,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let event = NSApp.currentEvent else { return }
 
         if event.type == .rightMouseUp {
+            // Settings can toggle this too, so read the real state each time.
+            rightClickMenu.item(withTag: Self.loginMenuItemTag)?.state =
+                SMAppService.mainApp.status == .enabled ? .on : .off
             statusItem.menu = rightClickMenu
             statusItem.button?.performClick(nil)
             statusItem.menu = nil
@@ -304,7 +482,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             while let next = self.chromeIntents[displayID] {
                 self.chromeIntents[displayID] = nil
                 guard let nook = self.nooks[displayID] else { return }
-                let screen = self.liveScreen(for: displayID)
+
+                // Never hand `expand`/`compact` a nil screen. They treat nil as "you
+                // choose", and the package's fallback chain ends at `NSScreen.main` - so a
+                // nook whose display has gone away (or whose displayID changed when a
+                // monitor was plugged in) would open a *second* shelf on top of whichever
+                // display happens to be main. That is the two-Burritos-on-the-external
+                // bug: retire the orphan instead.
+                guard let screen = self.liveScreen(for: displayID) else {
+                    self.retire(nook, on: displayID)
+                    return
+                }
+
                 switch next {
                 case .expanded: await nook.expand(on: screen)
                 case .compact: await nook.compact(on: screen)
@@ -312,6 +501,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // `expand`/`compact` await their own settle, so the animation has
                 // finished and the frame can be applied without clipping content.
                 self.applyChromeGeometry(to: nook, displayID: displayID)
+                self.sweepOrphanPanels()
             }
         }
     }
@@ -342,6 +532,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func checkForUpdates() {
         updaterController.checkForUpdates(nil)
+    }
+
+    @objc private func showSettings() {
+        settingsWindow.show()
     }
 
     private var preferredNotchScreen: NSScreen? {
@@ -564,8 +758,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return [displayID]
     }
 
+    /// The eligible display under `point`, or the preferred fallback. Restricted to
+    /// eligible displays so a click or drag on an excluded monitor does not try to open a
+    /// shelf that the user has switched off there.
     private func screen(containing point: NSPoint) -> NSScreen? {
-        NSScreen.screens.first { $0.frame.contains(point) } ?? preferredNotchScreen
+        let eligible = eligibleDisplayIDs()
+        let hit = NSScreen.screens.first { screen in
+            screen.frame.contains(point)
+                && displayID(for: screen).map(eligible.contains) == true
+        }
+        return hit ?? NSScreen.screens.first { displayID(for: $0).map(eligible.contains) == true }
     }
 
     /// The current `NSScreen` for a display, looked up fresh every time - see ``makeNook(for:)``.
@@ -580,22 +782,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// to a drag are guaranteed to describe the same rectangle.
     private func chromeFrame(on screen: NSScreen, state: NookState, style: NookStyle) -> NSRect {
         let menuHeight = max(screen.frame.maxY - screen.visibleFrame.maxY, 24)
-        let hasNotch = screen.auxiliaryTopLeftArea != nil && screen.auxiliaryTopRightArea != nil
         let insets = style.expandedContentInsets
         let width = NotchShelfView.contentSize.width
             + insets.leading + insets.trailing
             + (style.topCornerRadius * 2)
 
+        // Sized for the notch layout on every display, because `presentation` is pinned
+        // to `.notch`. On a display with no physical notch `safeAreaInsets.top` is 0, so
+        // the compact strip falls back to the menu-bar height - which is exactly the
+        // height the package's eared shape occupies there.
         let height: CGFloat
         switch state {
         case .expanded:
-            height = NotchShelfView.contentSize.height
-                + insets.top + insets.bottom
-                + (hasNotch ? 0 : menuHeight + 8)
+            height = NotchShelfView.contentSize.height + insets.top + insets.bottom
         case .compact:
-            height = hasNotch
-                ? max(screen.safeAreaInsets.top, menuHeight)
-                : (menuHeight * 2) + 8
+            height = max(screen.safeAreaInsets.top, menuHeight)
         case .hidden:
             height = 0
         }
@@ -684,18 +885,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// relaunch. `Nook` has no `deinit` either, so a discarded nook whose hide got
     /// superseded left its panel ordered on screen with nothing able to close it.
     @objc private func handleScreenParametersChange() {
-        let live = Set(NSScreen.screens.compactMap(displayID(for:)))
-
-        for (displayID, nook) in nooks where !live.contains(displayID) {
-            retire(nook, on: displayID)
-        }
-
-        for screen in NSScreen.screens {
-            guard let displayID = displayID(for: screen), nooks[displayID] == nil else { continue }
-            nooks[displayID] = makeNook(for: displayID)
-            setIntent(.compact, on: displayID)
-        }
-
+        // Also covers the fallback above resolving: plugging in a monitor while the scope
+        // is "External Monitor" moves the shelf off the built-in and onto it.
+        syncNooks()
         setProcessingPresentation(processor.isProcessing)
         reassertAllChromeGeometry()
     }

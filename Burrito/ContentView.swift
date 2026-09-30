@@ -62,18 +62,9 @@ struct NotchShelfView: View {
     @ObservedObject var interaction: NotchInteractionModel
     let requestExpansion: () -> Void
     @AppStorage("enginePreset") private var enginePreset = "balanced"
-    @State private var showSettings = false
 
     var body: some View {
-        ZStack {
-            if showSettings {
-                SettingsView(showSettings: $showSettings)
-                    .transition(.opacity)
-            } else {
-                mainContent
-                    .transition(.opacity)
-            }
-        }
+        mainContent
         .padding(.top, 32)
         .frame(width: Self.contentSize.width, height: Self.contentSize.height, alignment: .top)
         .background {
@@ -97,9 +88,7 @@ struct NotchShelfView: View {
         }
         .preferredColorScheme(.dark)
         .environment(\.controlActiveState, .active)
-        .animation(.easeOut(duration: 0.14), value: showSettings)
         .onReceive(NotificationCenter.default.publisher(for: .showBurritoDropZone)) { _ in
-            showSettings = false
             interaction.endChoosingFormat()
         }
         .onChange(of: processor.isProcessing) { _, processing in
@@ -127,7 +116,9 @@ struct NotchShelfView: View {
                 .buttonStyle(.plain)
                 .help(interaction.isPinned ? "Unpin Burrito" : "Keep Burrito open")
 
-                Button { showSettings = true } label: {
+                Button {
+                    NotificationCenter.default.post(name: .showBurritoSettings, object: nil)
+                } label: {
                     Image(systemName: "gearshape.fill")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.68))
@@ -228,8 +219,11 @@ struct NotchShelfView: View {
 
     /// Colour the drop zone carries for the active engine preset. Warm for speed, the
     /// app's own green for the balanced default, cool for maximum compression.
-    private var engineTint: Color {
-        switch enginePreset {
+    private var engineTint: Color { Self.tint(forPreset: enginePreset) }
+
+    /// Shared with the Settings window, so its accents match the shelf.
+    static func tint(forPreset preset: String) -> Color {
+        switch preset {
         case "fast":
             Color(red: 1.0, green: 0.65, blue: 0.24)
         case "smallest":

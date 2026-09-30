@@ -18,6 +18,22 @@ enum TargetFormat: String, Equatable {
     }
 }
 
+/// Where converted files land. Stored under `"outputLocation"`.
+enum OutputLocation: String, CaseIterable {
+    /// An `Optimized Files` folder beside each original.
+    case optimizedFolder
+    /// Next to each original, named "<name> optimized".
+    case besideOriginals
+    /// A folder chosen per batch.
+    case askEveryTime
+
+    static let storageKey = "outputLocation"
+
+    static var current: OutputLocation {
+        OutputLocation(rawValue: UserDefaults.standard.string(forKey: storageKey) ?? "") ?? .optimizedFolder
+    }
+}
+
 enum ProcessingStrategy: Equatable {
     case highQuality
     case webOptimized
@@ -85,6 +101,11 @@ final class ImageProcessor: ObservableObject {
     private var activeProcesses: [ObjectIdentifier: Process] = [:]
     private var cancelRequested = false
     private var autoDismissWorkItem: DispatchWorkItem?
+
+    /// The folder picked for the current batch under `.askEveryTime`. Set on the main
+    /// thread before any worker starts and cleared only when the next batch begins, so a
+    /// retry lands its files in the same place as the original run.
+    private var batchOutputDirectory: URL?
     private var mediaPreviewToken = UUID()
     private var copyResultsOnSuccess = false
 
@@ -178,6 +199,45 @@ final class ImageProcessor: ObservableObject {
         strategy: ProcessingStrategy,
         forcedTargetFormat: TargetFormat? = nil,
         copyResultsOnSuccess: Bool = false
+    ) {
+        guard !isBatchRunning else { return }
+
+        guard OutputLocation.current == .askEveryTime else {
+            batchOutputDirectory = nil
+            startBatch(droppedURLs, strategy: strategy,
+                       forcedTargetFormat: forcedTargetFormat,
+                       copyResultsOnSuccess: copyResultsOnSuccess)
+            return
+        }
+
+        // Asynchronous rather than `runModal`: drops arrive from inside AppKit's
+        // drag-and-drop callback, and a modal loop there would stall the drag session.
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Save Here"
+        panel.message = droppedURLs.count == 1
+            ? "Choose where to save the optimized file."
+            : "Choose where to save the \(droppedURLs.count) optimized files."
+        panel.directoryURL = droppedURLs.first?.deletingLastPathComponent()
+
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { [weak self] response in
+            guard let self, response == .OK, let directory = panel.url else { return }
+            self.batchOutputDirectory = directory
+            self.startBatch(droppedURLs, strategy: strategy,
+                            forcedTargetFormat: forcedTargetFormat,
+                            copyResultsOnSuccess: copyResultsOnSuccess)
+        }
+    }
+
+    private func startBatch(
+        _ droppedURLs: [URL],
+        strategy: ProcessingStrategy,
+        forcedTargetFormat: TargetFormat?,
+        copyResultsOnSuccess: Bool
     ) {
         guard !isBatchRunning else { return }
         autoDismissWorkItem?.cancel()
@@ -558,10 +618,17 @@ final class ImageProcessor: ObservableObject {
         }
         let originalSize = ((try? fileManager.attributesOfItem(atPath: sourceURL.path)[.size]) as? NSNumber)?.int64Value ?? 0
         let sourceDirectory = sourceURL.deletingLastPathComponent()
-        let savesBesideOriginals = UserDefaults.standard.string(forKey: "outputLocation") == "besideOriginals"
-        let optimizedDirectory = savesBesideOriginals
-            ? sourceDirectory
-            : sourceDirectory.appendingPathComponent("Optimized Files")
+        let chosenDirectory = batchOutputDirectory
+        let savesBesideOriginals = chosenDirectory == nil && OutputLocation.current == .besideOriginals
+        let optimizedDirectory = chosenDirectory
+            ?? (savesBesideOriginals ? sourceDirectory : sourceDirectory.appendingPathComponent("Optimized Files"))
+
+        // A chosen folder may be the source folder itself, and a PNG-to-PNG conversion
+        // would then share the original's name. Reserve a unique name so an original is
+        // never overwritten, and mark it when it would otherwise be identical.
+        let reservesOutputName = savesBesideOriginals || chosenDirectory != nil
+        let marksOptimized = savesBesideOriginals
+            || chosenDirectory?.standardizedFileURL == sourceDirectory.standardizedFileURL
 
         do {
             try fileManager.createDirectory(at: optimizedDirectory, withIntermediateDirectories: true)
@@ -582,8 +649,8 @@ final class ImageProcessor: ObservableObject {
         }
 
         let sourceBaseName = sourceURL.deletingPathExtension().lastPathComponent
-        let outputBaseName = savesBesideOriginals ? "\(sourceBaseName) optimized" : sourceBaseName
-        let finalURL = savesBesideOriginals
+        let outputBaseName = marksOptimized ? "\(sourceBaseName) optimized" : sourceBaseName
+        let finalURL = reservesOutputName
             ? reserveOutputURL(
                 in: optimizedDirectory,
                 baseName: outputBaseName,
@@ -596,7 +663,7 @@ final class ImageProcessor: ObservableObject {
             .appendingPathComponent(".burrito-\(UUID().uuidString)")
             .appendingPathExtension(targetFormat.fileExtension)
         var shouldRemoveTemporaryFile = true
-        var shouldRemoveOutputReservation = savesBesideOriginals
+        var shouldRemoveOutputReservation = reservesOutputName
         defer {
             if shouldRemoveTemporaryFile { try? fileManager.removeItem(at: temporaryURL) }
             if shouldRemoveOutputReservation { try? fileManager.removeItem(at: finalURL) }

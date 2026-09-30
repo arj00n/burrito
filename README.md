@@ -53,9 +53,16 @@ percentage saved.
 
 **Pin** the shelf open with the pin button if you are running several batches.
 
-**Settings** (gear icon) covers where output lands — an `Optimized` folder or
-beside the originals — and an optional size ceiling for PDFs. Right-click the
-menu bar icon for **Launch on Login**, update checks, and quit.
+**Settings** opens in its own window — from the gear in the shelf, or
+right-click the menu bar icon → **Settings…** (⌘,). It covers:
+
+- **Display** — show the shelf on the built-in display, an external monitor, or
+  both. External monitors get a notch-style shelf at the top of the screen.
+- **Saving** — an `Optimized Files` folder beside each original, beside the
+  originals themselves, or ask for a folder each time.
+- **Conversion** — the engine preset and an optional size ceiling for PDFs.
+- **General** — launch at login and automatic update checks. Available updates
+  show at the top of the window.
 
 ## Raycast
 
